@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f5e52">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<title>مدیریت مالی</title>
+<style>
+:root{--bg:#f2f4f1;--ink:#17211c;--mut:#5d6b64;--line:#d5dbd6;--card:#fff;--acc:#0f5e52;--onacc:#fff;--bad:#b3341f;--warn:#8f5f00;--ok:#2f6f3e}
+@media (prefers-color-scheme:dark){:root{--bg:#121816;--ink:#e8eeea;--mut:#9aa8a0;--line:#2b3631;--card:#1b2420;--acc:#4fb8a4;--onacc:#0b1411;--bad:#ff8a73;--warn:#e2b04a;--ok:#7fcf90}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.7 "Samsung Sans",Tahoma,system-ui,sans-serif;padding:env(safe-area-inset-top) 0 calc(150px + env(safe-area-inset-bottom))}
+header{padding:20px 16px 8px;max-width:640px;margin:0 auto}
+h1{margin:0;font-size:24px}
+#summary{margin:4px 0 0;color:var(--mut);font-size:15px}
+main{padding:8px 16px;display:grid;gap:12px;max-width:640px;margin:0 auto}
+h3.sep{margin:12px 0 0;font-size:15px;color:var(--mut);font-weight:400}
+.card{background:var(--card);border:1px solid var(--line);border-right:6px solid var(--line);border-radius:10px;padding:12px 14px}
+.card.bad{border-right-color:var(--bad)}.card.warn{border-right-color:var(--warn)}.card.ok{border-right-color:var(--ok)}.card.acc{border-right-color:var(--acc)}
+.card.arch{opacity:.65}
+.card h2{margin:0;font-size:17px}
+.status{font-size:20px;font-weight:700;margin:2px 0}
+.bad .status{color:var(--bad)}.warn .status{color:var(--warn)}.ok .status{color:var(--ok)}
+.meta{color:var(--mut);font-size:14px}
+.ltr{direction:ltr;unicode-bidi:plaintext;text-align:right;font-variant-numeric:tabular-nums}
+.row{display:flex;gap:8px;margin-top:10px}
+button{font:inherit;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--ink);padding:8px 12px;min-height:44px}
+button.main{background:var(--acc);color:var(--onacc);border-color:var(--acc);flex:1}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
+#add{position:fixed;inset-inline:16px;bottom:calc(72px + env(safe-area-inset-bottom));max-width:608px;margin:auto;background:var(--acc);color:var(--onacc);border-color:var(--acc);font-weight:700}
+nav{position:fixed;inset-inline:0;bottom:0;display:flex;background:var(--card);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom)}
+nav button{flex:1;border:0;border-radius:0;min-height:56px;color:var(--mut)}
+nav button.on{color:var(--acc);font-weight:700;box-shadow:inset 0 3px 0 var(--acc)}
+.empty{color:var(--mut);text-align:center;padding:40px 0}
+dialog{width:min(92vw,420px);border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--ink);padding:16px}
+dialog::backdrop{background:rgba(0,0,0,.45)}
+dialog h3{margin:0 0 4px;font-size:18px}
+label{display:block;margin-top:10px;font-size:14px;color:var(--mut)}
+input,select{width:100%;font:inherit;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);min-height:44px}
+.dates{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.err{color:var(--bad);min-height:1.5em;font-size:14px}
+[hidden]{display:none!important}
+</style>
+<script>
+addEventListener('error', function (e) {
+  var t = e.target, msg = (t && t.src) ? 'Failed to load: ' + t.src.split('/').pop() : 'Error: ' + e.message + ' (line ' + e.lineno + ')';
+  var d = document.createElement('div');
+  d.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99;background:#b3341f;color:#fff;padding:8px;font:13px monospace;direction:ltr';
+  d.textContent = msg; document.documentElement.appendChild(d);
+}, true);
+</script>
+</head>
+<body>
+<header><h1 id="title"></h1><p id="summary"></p></header>
+<main id="list"></main>
+<button id="add"></button>
+<nav id="nav"><button data-v="accounts">حساب‌ها</button><button data-v="loans">وام‌ها</button></nav>
+
+<dialog id="dlgAcc">
+<form id="formAcc">
+  <h3 id="accTitle"></h3>
+  <label>نام حساب<input name="name" required maxlength="40"></label>
+  <label>نوع حساب
+    <select name="type"><option value="cash">نقد</option><option value="bank">بانکی</option></select>
+  </label>
+  <label>موجودی اولیه (ریال)<input name="opening" inputmode="numeric" required value="0" class="ltr"></label>
+  <div id="bankFields">
+    <label>شماره حساب (اختیاری)<input name="number" inputmode="text" maxlength="40" class="ltr"></label>
+    <label>شماره شبا (اختیاری)<input name="iban" inputmode="text" maxlength="30" placeholder="IR..." class="ltr"></label>
+  </div>
+  <p class="err" role="alert" id="errAcc"></p>
+  <div class="row"><button class="main" type="submit">ذخیره حساب</button><button type="button" id="cancelAcc">انصراف</button></div>
+</form>
+</dialog>
+
+<dialog id="dlgLoan">
+<form id="formLoan">
+  <h3>وام جدید</h3>
+  <label>عنوان وام<input name="title" required maxlength="60"></label>
+  <label>مبلغ هر قسط (ریال)<input name="amount" inputmode="numeric" required class="ltr"></label>
+  <label>تعداد کل اقساط<input name="total" inputmode="numeric" required class="ltr"></label>
+  <label>تعداد اقساط پرداخت‌شده<input name="paid" inputmode="numeric" value="0" required class="ltr"></label>
+  <label>تاریخ سررسید قسط بعدی (سال / ماه / روز)</label>
+  <div class="dates">
+    <input name="y" inputmode="numeric" aria-label="سال" required class="ltr">
+    <input name="m" inputmode="numeric" aria-label="ماه" required class="ltr">
+    <input name="d" inputmode="numeric" aria-label="روز" required class="ltr">
+  </div>
+  <p class="err" role="alert" id="errLoan"></p>
+  <div class="row"><button class="main" type="submit">ذخیره وام</button><button type="button" id="cancelLoan">انصراف</button></div>
+</form>
+</dialog>
+
+<script src="jalali.js"></script>
+<script src="util.js"></script>
+<script>
+const $ = s => document.querySelector(s);
+const fa = n => Number(n).toLocaleString('fa-IR');
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const { toInt, validIban } = Util;
+let db, view = 'accounts';
+
+// ---- storage (IndexedDB) ----
+function openDb() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open('finance', 2);
+    r.onupgradeneeded = () => {
+      for (const n of ['loans', 'accounts'])
+        if (!r.result.objectStoreNames.contains(n)) r.result.createObjectStore(n, { keyPath: 'id', autoIncrement: true });
+    };
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+function tx(store, mode, fn) {
+  return new Promise((res, rej) => {
+    const t = db.transaction(store, mode);
+    const q = fn(t.objectStore(store));
+    t.oncomplete = () => res(q && q.result);
+    t.onerror = () => rej(t.error);
+  });
+}
+const getAll = s => tx(s, 'readonly', o => o.getAll());
+const put = (s, v) => tx(s, 'readwrite', o => o.put(v));
+const del = (s, id) => tx(s, 'readwrite', o => o.delete(id));
+
+// ---- navigation ----
+async function render() {
+  document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.v === view));
+  $('#title').textContent = view === 'accounts' ? 'حساب‌ها' : 'وام‌ها';
+  $('#add').textContent = view === 'accounts' ? 'حساب جدید' : 'وام جدید';
+  await (view === 'accounts' ? renderAccounts() : renderLoans());
+}
+$('#nav').addEventListener('click', e => {
+  const b = e.target.closest('button[data-v]');
+  if (b) { view = b.dataset.v; render(); }
+});
+$('#add').onclick = () => (view === 'accounts' ? openAccount() : openLoan());
+
+// ================= ACCOUNTS =================
+// Balance is always computed. Transactions will be added here later.
+const balance = a => a.opening;
+const fmtIban = s => s.replace(/(.{4})/g, '$1 ').trim();
+
+async function renderAccounts() {
+  const all = await getAll('accounts');
+  const active = all.filter(a => !a.archived), archived = all.filter(a => a.archived);
+  $('#summary').textContent = active.length ? `جمع مانده‌ها: ${fa(active.reduce((s, a) => s + balance(a), 0))} ریال` : '';
+  const card = a => `
+    <article class="card acc ${a.archived ? 'arch' : ''}">
+      <h2>${esc(a.name)} <span class="meta">· ${a.type === 'cash' ? 'نقد' : 'بانکی'}</span></h2>
+      <div class="status">${fa(balance(a))} ریال</div>
+      ${a.number ? `<div class="meta">شماره حساب: <span class="ltr">${esc(a.number)}</span></div>` : ''}
+      ${a.iban ? `<div class="meta">شبا: <span class="ltr">${fmtIban(a.iban)}</span></div>` : ''}
+      <div class="row">
+        <button data-act="edit" data-id="${a.id}">ویرایش</button>
+        <button data-act="arch" data-id="${a.id}">${a.archived ? 'بازگردانی' : 'بایگانی'}</button>
+      </div>
+    </article>`;
+  $('#list').innerHTML = all.length
+    ? active.map(card).join('') + (archived.length ? '<h3 class="sep">بایگانی</h3>' + archived.map(card).join('') : '')
+    : '<p class="empty">هنوز حسابی ثبت نکردی.<br>با دکمه «حساب جدید» شروع کن.</p>';
+}
+
+const dlgAcc = $('#dlgAcc'), formAcc = $('#formAcc');
+let editingId = null;
+function toggleBankFields() { $('#bankFields').hidden = formAcc.type.value !== 'bank'; }
+formAcc.type.addEventListener('change', toggleBankFields);
+function openAccount(a) {
+  formAcc.reset();
+  editingId = a ? a.id : null;
+  $('#accTitle').textContent = a ? 'ویرایش حساب' : 'حساب جدید';
+  if (a) {
+    formAcc.name.value = a.name; formAcc.type.value = a.type; formAcc.opening.value = a.opening;
+    formAcc.number.value = a.number || ''; formAcc.iban.value = a.iban || '';
+  }
+  toggleBankFields();
+  $('#errAcc').textContent = '';
+  dlgAcc.showModal();
+}
+$('#cancelAcc').onclick = () => dlgAcc.close();
+formAcc.addEventListener('submit', async e => {
+  e.preventDefault();
+  const v = Object.fromEntries(new FormData(formAcc));
+  const name = v.name.trim(), opening = toInt(v.opening);
+  const all = await getAll('accounts');
+  let err = '', iban = '';
+  if (!name) err = 'نام حساب رو وارد کن.';
+  else if (all.some(a => a.id !== editingId && a.name.trim().toLowerCase() === name.toLowerCase())) err = 'حسابی با این نام وجود داره.';
+  else if (Number.isNaN(opening)) err = 'موجودی اولیه باید عدد صحیح و صفر یا بیشتر باشه.';
+  if (!err && v.type === 'bank' && v.iban.trim()) {
+    iban = validIban(v.iban);
+    if (!iban) err = 'شماره شبا معتبر نیست. (IR و ۲۴ رقم)';
+  }
+  if (err) { $('#errAcc').textContent = err; return; }
+  const old = editingId ? all.find(a => a.id === editingId) : null;
+  const rec = { ...(old || {}), name, type: v.type, opening, archived: old ? old.archived : false,
+    number: v.type === 'bank' ? Util.norm(v.number).trim() : '', iban: v.type === 'bank' ? iban : '' };
+  await put('accounts', rec);
+  dlgAcc.close();
+  render();
+});
+$('#list').addEventListener('click', async e => {
+  const b = e.target.closest('button[data-act]');
+  if (!b) return;
+  const id = Number(b.dataset.id), act = b.dataset.act;
+  if (act === 'edit' || act === 'arch') {
+    const a = (await getAll('accounts')).find(x => x.id === id);
+    if (!a) return;
+    if (act === 'edit') return openAccount(a);
+    if (!a.archived && balance(a) !== 0) { alert('برای بایگانی، مانده حساب باید صفر باشه. اول پول رو به حساب دیگه منتقل کن.'); return; }
+    a.archived = !a.archived;
+    await put('accounts', a);
+  } else {
+    await loanAction(act, id);
+  }
+  render();
+});
+
+// ================= LOANS =================
+function nextDue(l) {
+  const [y, m] = l.due;
+  return [y, m, Math.min(l.dueDay, Jal.monthDays(y, m))];
+}
+const fmtDate = ([y, m, d]) => `${fa(d)} ${Jal.MONTHS[m - 1]} ${String(fa(y)).replace(/٬/g, '')}`;
+function describe(l) {
+  const diff = Jal.toDayNum(...nextDue(l)) - Jal.todayNum();
+  if (diff < 0) return { diff, cls: 'bad', text: `${fa(-diff)} روز عقب‌افتاده` };
+  if (diff === 0) return { diff, cls: 'bad', text: 'سررسید امروز' };
+  if (diff <= 7) return { diff, cls: 'warn', text: `${fa(diff)} روز دیگه` };
+  return { diff, cls: 'ok', text: `${fa(diff)} روز دیگه` };
+}
+async function renderLoans() {
+  const loans = await getAll('loans');
+  const active = loans.filter(l => l.paid < l.total).map(l => ({ l, s: describe(l) })).sort((a, b) => a.s.diff - b.s.diff);
+  const done = loans.filter(l => l.paid >= l.total);
+  const urgent = active.filter(x => x.s.diff <= 7).length;
+  $('#summary').textContent = !loans.length ? '' : urgent ? `${fa(urgent)} قسط تا ۷ روز آینده یا عقب‌افتاده` : 'قسطی تا ۷ روز آینده نداری';
+  const card = (l, s) => `
+    <article class="card ${s ? s.cls : ''}">
+      <h2>${esc(l.title)}</h2>
+      ${s ? `<div class="status">${s.text}</div><div class="meta">سررسید ${fmtDate(nextDue(l))} · مبلغ ${fa(l.amount)} ریال</div>` : `<div class="status">تسویه شد</div>`}
+      <div class="meta">${fa(l.paid)} از ${fa(l.total)} قسط پرداخت شده${s ? ` · مانده ${fa((l.total - l.paid) * l.amount)} ریال` : ''}</div>
+      <div class="row">
+        ${s ? `<button class="main" data-act="pay" data-id="${l.id}">قسط پرداخت شد</button>` : ''}
+        <button data-act="del" data-id="${l.id}">حذف</button>
+      </div>
+    </article>`;
+  $('#list').innerHTML = loans.length
+    ? active.map(x => card(x.l, x.s)).join('') + done.map(l => card(l, null)).join('')
+    : '<p class="empty">هنوز وامی ثبت نکردی.<br>با دکمه «وام جدید» شروع کن.</p>';
+}
+async function loanAction(act, id) {
+  const l = (await getAll('loans')).find(x => x.id === id);
+  if (!l) return;
+  if (act === 'pay') {
+    l.paid++;
+    let [y, m] = l.due; m++; if (m > 12) { m = 1; y++; }
+    l.due = [y, m];
+    await put('loans', l);
+  } else if (act === 'del' && confirm(`وام «${l.title}» حذف بشه؟`)) {
+    await del('loans', id);
+  }
+}
+const dlgLoan = $('#dlgLoan'), formLoan = $('#formLoan');
+function openLoan() {
+  formLoan.reset();
+  const [y, m, d] = Jal.fromDayNum(Jal.todayNum());
+  formLoan.y.value = y; formLoan.m.value = m; formLoan.d.value = d;
+  $('#errLoan').textContent = '';
+  dlgLoan.showModal();
+}
+$('#cancelLoan').onclick = () => dlgLoan.close();
+formLoan.addEventListener('submit', async e => {
+  e.preventDefault();
+  const v = Object.fromEntries(new FormData(formLoan));
+  const n = Object.fromEntries(['amount', 'total', 'paid', 'y', 'm', 'd'].map(k => [k, toInt(v[k])]));
+  let err = '';
+  if (Object.values(n).some(Number.isNaN)) err = 'همه عددها باید صحیح باشن.';
+  else if (n.amount < 1 || n.total < 1) err = 'مبلغ قسط و تعداد اقساط باید بیشتر از صفر باشه.';
+  else if (n.paid > n.total) err = 'اقساط پرداخت‌شده بیشتر از کل اقساطه.';
+  else if (n.m < 1 || n.m > 12 || n.d < 1 || n.d > Jal.monthDays(n.y, n.m)) err = 'تاریخ سررسید معتبر نیست.';
+  if (err) { $('#errLoan').textContent = err; return; }
+  await put('loans', { title: v.title.trim(), amount: n.amount, total: n.total, paid: n.paid, due: [n.y, n.m], dueDay: n.d });
+  dlgLoan.close();
+  render();
+});
+
+// ---- start ----
+(async () => {
+  try { db = await openDb(); } catch (err) {
+    $('#list').innerHTML = '<p class="empty">ذخیره‌سازی (IndexedDB) در این حالت کار نمی‌کنه.<br>فایل‌ها باید از آدرس HTTPS یا localhost باز بشن.</p>';
+    return;
+  }
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
+  render();
+})();
+</script>
+</body>
+</html>
