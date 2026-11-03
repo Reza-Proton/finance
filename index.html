@@ -56,7 +56,7 @@ addEventListener('error', function (e) {
 <header><h1 id="title"></h1><p id="summary"></p></header>
 <main id="list"></main>
 <button id="add"></button>
-<nav id="nav"><button data-v="accounts">حساب‌ها</button><button data-v="loans">وام‌ها</button></nav>
+<nav id="nav"><button data-v="accounts">حساب‌ها</button><button data-v="tx">تراکنش‌ها</button><button data-v="loans">وام‌ها</button></nav>
 
 <dialog id="dlgAcc">
 <form id="formAcc">
@@ -93,8 +93,35 @@ addEventListener('error', function (e) {
 </form>
 </dialog>
 
+<dialog id="dlgTx">
+<form id="formTx">
+  <h3 id="txTitle"></h3>
+  <label>نوع تراکنش
+    <select name="type"><option value="expense">هزینه</option><option value="income">درآمد</option><option value="transfer">انتقال بین حساب‌ها</option></select>
+  </label>
+  <label><span id="lblAcc">از حساب</span><select name="accountId"></select></label>
+  <label id="lblTo" hidden>به حساب<select name="toId"></select></label>
+  <label>مبلغ (ریال)<input name="amount" inputmode="numeric" required class="ltr"></label>
+  <label id="lblFee">کارمزد (ریال، اختیاری)<input name="fee" inputmode="numeric" value="0" class="ltr"></label>
+  <div id="catFields">
+    <label>دسته‌بندی<select name="category"></select></label>
+    <label id="lblSub">زیردسته<select name="sub"></select></label>
+  </div>
+  <label>تاریخ (سال / ماه / روز)</label>
+  <div class="dates">
+    <input name="y" inputmode="numeric" aria-label="سال" required class="ltr">
+    <input name="m" inputmode="numeric" aria-label="ماه" required class="ltr">
+    <input name="d" inputmode="numeric" aria-label="روز" required class="ltr">
+  </div>
+  <label>توضیح (اختیاری)<input name="note" maxlength="100"></label>
+  <p class="err" role="alert" id="errTx"></p>
+  <div class="row"><button class="main" type="submit">ذخیره تراکنش</button><button type="button" id="cancelTx">انصراف</button></div>
+</form>
+</dialog>
+
 <script src="jalali.js"></script>
 <script src="util.js"></script>
+<script src="categories.js"></script>
 <script>
 const $ = s => document.querySelector(s);
 const fa = n => Number(n).toLocaleString('fa-IR');
@@ -105,9 +132,9 @@ let db, view = 'accounts';
 // ---- storage (IndexedDB) ----
 function openDb() {
   return new Promise((res, rej) => {
-    const r = indexedDB.open('finance', 2);
+    const r = indexedDB.open('finance', 3);
     r.onupgradeneeded = () => {
-      for (const n of ['loans', 'accounts'])
+      for (const n of ['loans', 'accounts', 'transactions'])
         if (!r.result.objectStoreNames.contains(n)) r.result.createObjectStore(n, { keyPath: 'id', autoIncrement: true });
     };
     r.onsuccess = () => res(r.result);
@@ -129,23 +156,26 @@ const del = (s, id) => tx(s, 'readwrite', o => o.delete(id));
 // ---- navigation ----
 async function render() {
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.v === view));
-  $('#title').textContent = view === 'accounts' ? 'حساب‌ها' : 'وام‌ها';
-  $('#add').textContent = view === 'accounts' ? 'حساب جدید' : 'وام جدید';
-  await (view === 'accounts' ? renderAccounts() : renderLoans());
+  const V = { accounts: ['حساب‌ها', 'حساب جدید', renderAccounts], tx: ['تراکنش‌ها', 'تراکنش جدید', renderTx], loans: ['وام‌ها', 'وام جدید', renderLoans] }[view];
+  $('#title').textContent = V[0];
+  $('#add').textContent = V[1];
+  await V[2]();
 }
 $('#nav').addEventListener('click', e => {
   const b = e.target.closest('button[data-v]');
   if (b) { view = b.dataset.v; render(); }
 });
-$('#add').onclick = () => (view === 'accounts' ? openAccount() : openLoan());
+$('#add').onclick = () => ({ accounts: openAccount, tx: openTx, loans: openLoan }[view])();
 
 // ================= ACCOUNTS =================
 // Balance is always computed. Transactions will be added here later.
-const balance = a => a.opening;
+let BAL = new Map();
+const balance = a => (BAL.has(a.id) ? BAL.get(a.id) : a.opening);
 const fmtIban = s => s.replace(/(.{4})/g, '$1 ').trim();
 
 async function renderAccounts() {
   const all = await getAll('accounts');
+  BAL = computeBalances(all, await getAll('transactions'));
   const active = all.filter(a => !a.archived), archived = all.filter(a => a.archived);
   $('#summary').textContent = active.length ? `جمع مانده‌ها: ${fa(active.reduce((s, a) => s + balance(a), 0))} ریال` : '';
   const card = a => `
@@ -198,6 +228,10 @@ formAcc.addEventListener('submit', async e => {
   const old = editingId ? all.find(a => a.id === editingId) : null;
   const rec = { ...(old || {}), name, type: v.type, opening, archived: old ? old.archived : false,
     number: v.type === 'bank' ? Util.norm(v.number).trim() : '', iban: v.type === 'bank' ? iban : '' };
+  if (old) {
+    const neg = firstNegative(all.map(a => (a.id === rec.id ? rec : a)), await getAll('transactions'));
+    if (neg) { $('#errAcc').textContent = `با این موجودی اولیه، مانده حساب «${neg.name}» منفی می‌شه.`; return; }
+  }
   await put('accounts', rec);
   dlgAcc.close();
   render();
@@ -206,6 +240,7 @@ $('#list').addEventListener('click', async e => {
   const b = e.target.closest('button[data-act]');
   if (!b) return;
   const id = Number(b.dataset.id), act = b.dataset.act;
+  if (act.startsWith('tx')) { await txAction(act, id); render(); return; }
   if (act === 'edit' || act === 'arch') {
     const a = (await getAll('accounts')).find(x => x.id === id);
     if (!a) return;
@@ -287,6 +322,138 @@ formLoan.addEventListener('submit', async e => {
   dlgLoan.close();
   render();
 });
+
+// ================= TRANSACTIONS =================
+// Balance = opening + income - expense(amount+fee) - transfer out(amount+fee) + transfer in(amount)
+function computeBalances(accounts, txs) {
+  const m = new Map(accounts.map(a => [a.id, a.opening]));
+  const add = (id, v) => m.set(id, (m.get(id) || 0) + v);
+  for (const t of txs) {
+    if (t.type === 'income') add(t.accountId, t.amount);
+    else if (t.type === 'expense') add(t.accountId, -(t.amount + t.fee));
+    else { add(t.accountId, -(t.amount + t.fee)); add(t.toAccountId, t.amount); }
+  }
+  return m;
+}
+function firstNegative(accounts, txs) {
+  const m = computeBalances(accounts, txs);
+  return accounts.find(a => m.get(a.id) < 0);
+}
+const fmtFull = ([y, m, d]) => `${fa(d)} ${Jal.MONTHS[m - 1]} ${String(fa(y)).replace(/٬/g, '')}`;
+
+async function renderTx() {
+  const [txs, accounts] = await Promise.all([getAll('transactions'), getAll('accounts')]);
+  const nm = id => (accounts.find(a => a.id === id) || {}).name || '؟';
+  txs.sort((a, b) => b.day - a.day || b.id - a.id);
+  const [cy, cm] = Jal.fromDayNum(Jal.todayNum());
+  let inc = 0, exp = 0;
+  for (const t of txs.filter(t => t.date[0] === cy && t.date[1] === cm)) {
+    if (t.type === 'income') inc += t.amount;
+    else exp += (t.type === 'expense' ? t.amount : 0) + t.fee;
+  }
+  $('#summary').textContent = txs.length ? `${Jal.MONTHS[cm - 1]}: درآمد ${fa(inc)} · هزینه ${fa(exp)} ریال` : '';
+  const card = t => {
+    const cls = { income: 'ok', expense: 'bad', transfer: 'acc' }[t.type];
+    const sign = { income: '+', expense: '−', transfer: '' }[t.type];
+    const title = t.type === 'transfer' ? `از ${esc(nm(t.accountId))} به ${esc(nm(t.toAccountId))}`
+      : esc(t.category) + (t.sub ? ' · ' + esc(t.sub) : '');
+    return `<article class="card ${cls}">
+      <h2>${title}</h2>
+      <div class="status">${sign}${fa(t.amount)} ریال</div>
+      <div class="meta">${fmtFull(t.date)}${t.type !== 'transfer' ? ' · ' + esc(nm(t.accountId)) : ''}${t.fee ? ` · کارمزد ${fa(t.fee)}` : ''}</div>
+      ${t.note ? `<div class="meta">${esc(t.note)}</div>` : ''}
+      <div class="row"><button data-act="txedit" data-id="${t.id}">ویرایش</button><button data-act="txdel" data-id="${t.id}">حذف</button></div>
+    </article>`;
+  };
+  $('#list').innerHTML = txs.length ? txs.map(card).join('') : '<p class="empty">هنوز تراکنشی ثبت نکردی.<br>با دکمه «تراکنش جدید» شروع کن.</p>';
+}
+
+const dlgTx = $('#dlgTx'), formTx = $('#formTx');
+let editingTx = null, txAccounts = [];
+function fillAccountSelects(extraIds) {
+  const opts = txAccounts.filter(a => !a.archived || extraIds.includes(a.id)).map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+  formTx.accountId.innerHTML = opts; formTx.toId.innerHTML = opts;
+}
+function fillCategories(keepCat, keepSub) {
+  const t = formTx.type.value;
+  if (t === 'transfer') return;
+  const cats = Object.keys(CATS[t]);
+  formTx.category.innerHTML = cats.map(c => `<option>${esc(c)}</option>`).join('');
+  if (keepCat && cats.includes(keepCat)) formTx.category.value = keepCat;
+  fillSubs(keepSub);
+}
+function fillSubs(keepSub) {
+  const subs = CATS[formTx.type.value][formTx.category.value] || [];
+  formTx.sub.innerHTML = subs.map(s => `<option>${esc(s)}</option>`).join('');
+  if (keepSub && subs.includes(keepSub)) formTx.sub.value = keepSub;
+  $('#lblSub').hidden = !subs.length;
+}
+function syncTxType() {
+  const t = formTx.type.value;
+  $('#lblAcc').textContent = t === 'income' ? 'به حساب' : 'از حساب';
+  $('#lblTo').hidden = t !== 'transfer';
+  $('#lblFee').hidden = t === 'income';
+  $('#catFields').hidden = t === 'transfer';
+  fillCategories();
+}
+formTx.type.addEventListener('change', syncTxType);
+formTx.category.addEventListener('change', () => fillSubs());
+
+async function openTx(t) {
+  txAccounts = await getAll('accounts');
+  const extra = t ? [t.accountId, t.toAccountId] : [];
+  if (!txAccounts.some(a => !a.archived)) { alert('اول توی بخش حساب‌ها یه حساب بساز.'); return; }
+  formTx.reset();
+  editingTx = t ? t.id : null;
+  $('#txTitle').textContent = t ? 'ویرایش تراکنش' : 'تراکنش جدید';
+  fillAccountSelects(extra);
+  const [y, m, d] = t ? t.date : Jal.fromDayNum(Jal.todayNum());
+  formTx.y.value = y; formTx.m.value = m; formTx.d.value = d;
+  if (t) {
+    formTx.type.value = t.type; syncTxType();
+    formTx.accountId.value = t.accountId; if (t.toAccountId) formTx.toId.value = t.toAccountId;
+    formTx.amount.value = t.amount; formTx.fee.value = t.fee; formTx.note.value = t.note || '';
+    if (t.type !== 'transfer') fillCategories(t.category, t.sub);
+  } else syncTxType();
+  $('#errTx').textContent = '';
+  dlgTx.showModal();
+}
+$('#cancelTx').onclick = () => dlgTx.close();
+formTx.addEventListener('submit', async e => {
+  e.preventDefault();
+  const v = Object.fromEntries(new FormData(formTx));
+  const n = Object.fromEntries(['amount', 'fee', 'y', 'm', 'd'].map(k => [k, toInt(v[k] || '0')]));
+  if (v.type === 'income') n.fee = 0;
+  let err = '';
+  if (Object.values(n).some(Number.isNaN)) err = 'همه عددها باید صحیح باشن.';
+  else if (n.amount < 1) err = 'مبلغ باید بیشتر از صفر باشه.';
+  else if (n.m < 1 || n.m > 12 || n.d < 1 || n.d > Jal.monthDays(n.y, n.m)) err = 'تاریخ معتبر نیست.';
+  else if (v.type === 'transfer' && v.accountId === v.toId) err = 'حساب مبدأ و مقصد نباید یکی باشن.';
+  if (err) { $('#errTx').textContent = err; return; }
+  const rec = { type: v.type, accountId: Number(v.accountId), amount: n.amount, fee: n.fee, note: v.note.trim(),
+    date: [n.y, n.m, n.d], day: Jal.toDayNum(n.y, n.m, n.d), ref: null };
+  if (v.type === 'transfer') rec.toAccountId = Number(v.toId);
+  else { rec.category = v.category; rec.sub = v.sub || ''; }
+  if (editingTx) rec.id = editingTx;
+  const accounts = await getAll('accounts');
+  const rest = (await getAll('transactions')).filter(t => t.id !== editingTx);
+  const neg = firstNegative(accounts, [...rest, rec]);
+  if (neg) { $('#errTx').textContent = `با این تراکنش، مانده حساب «${neg.name}» منفی می‌شه.`; return; }
+  await put('transactions', rec);
+  dlgTx.close();
+  render();
+});
+async function txAction(act, id) {
+  const txs = await getAll('transactions');
+  const t = txs.find(x => x.id === id);
+  if (!t) return;
+  if (act === 'txedit') return openTx(t);
+  if (!confirm('این تراکنش حذف بشه؟')) return;
+  const accounts = await getAll('accounts');
+  const neg = firstNegative(accounts, txs.filter(x => x.id !== id));
+  if (neg) { alert(`حذف این تراکنش مانده حساب «${neg.name}» رو منفی می‌کنه.`); return; }
+  await del('transactions', id);
+}
 
 // ---- start ----
 (async () => {
