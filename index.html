@@ -56,7 +56,7 @@ addEventListener('error', function (e) {
 <header><h1 id="title"></h1><p id="summary"></p></header>
 <main id="list"></main>
 <button id="add"></button>
-<nav id="nav"><button data-v="accounts">حساب‌ها</button><button data-v="tx">تراکنش‌ها</button><button data-v="loans">وام‌ها</button></nav>
+<nav id="nav"><button data-v="accounts">حساب‌ها</button><button data-v="tx">تراکنش‌ها</button><button data-v="loans">سررسیدها</button></nav>
 
 <dialog id="dlgAcc">
 <form id="formAcc">
@@ -65,7 +65,7 @@ addEventListener('error', function (e) {
   <label>نوع حساب
     <select name="type"><option value="cash">نقد</option><option value="bank">بانکی</option></select>
   </label>
-  <label>موجودی اولیه (ریال)<input name="opening" inputmode="numeric" required value="0" class="ltr"></label>
+  <label>موجودی اولیه (ریال)<input name="opening" inputmode="numeric" required value="0" class="ltr money"></label>
   <div id="bankFields">
     <label>شماره حساب (اختیاری)<input name="number" inputmode="text" maxlength="40" class="ltr"></label>
     <label>شماره شبا (اختیاری)<input name="iban" inputmode="text" maxlength="30" placeholder="IR..." class="ltr"></label>
@@ -77,9 +77,10 @@ addEventListener('error', function (e) {
 
 <dialog id="dlgLoan">
 <form id="formLoan">
-  <h3>وام جدید</h3>
+  <h3 id="loanTitle"></h3>
   <label>عنوان وام<input name="title" required maxlength="60"></label>
-  <label>مبلغ هر قسط (ریال)<input name="amount" inputmode="numeric" required class="ltr"></label>
+  <label>مبلغ کل وام (ریال، اختیاری)<input name="principal" inputmode="numeric" class="ltr money"></label>
+  <label>مبلغ هر قسط (ریال)<input name="amount" inputmode="numeric" required class="ltr money"></label>
   <label>تعداد کل اقساط<input name="total" inputmode="numeric" required class="ltr"></label>
   <label>تعداد اقساط پرداخت‌شده<input name="paid" inputmode="numeric" value="0" required class="ltr"></label>
   <label>تاریخ سررسید قسط بعدی (سال / ماه / روز)</label>
@@ -101,8 +102,8 @@ addEventListener('error', function (e) {
   </label>
   <label><span id="lblAcc">از حساب</span><select name="accountId"></select></label>
   <label id="lblTo" hidden>به حساب<select name="toId"></select></label>
-  <label>مبلغ (ریال)<input name="amount" inputmode="numeric" required class="ltr"></label>
-  <label id="lblFee">کارمزد (ریال، اختیاری)<input name="fee" inputmode="numeric" value="0" class="ltr"></label>
+  <label>مبلغ (ریال)<input name="amount" inputmode="numeric" required class="ltr money"></label>
+  <label id="lblFee">کارمزد (ریال، اختیاری)<input name="fee" inputmode="numeric" value="0" class="ltr money"></label>
   <div id="catFields">
     <label>دسته‌بندی<select name="category"></select></label>
     <label id="lblSub">زیردسته<select name="sub"></select></label>
@@ -116,6 +117,23 @@ addEventListener('error', function (e) {
   <label>توضیح (اختیاری)<input name="note" maxlength="100"></label>
   <p class="err" role="alert" id="errTx"></p>
   <div class="row"><button class="main" type="submit">ذخیره تراکنش</button><button type="button" id="cancelTx">انصراف</button></div>
+</form>
+</dialog>
+
+<dialog id="dlgPay">
+<form id="formPay">
+  <h3 id="payTitle"></h3>
+  <label>از حساب<select name="account"></select></label>
+  <label>مبلغ (ریال)<input name="amount" inputmode="numeric" required class="ltr money"></label>
+  <label>کارمزد (ریال، اختیاری)<input name="fee" inputmode="numeric" value="0" class="ltr money"></label>
+  <label>تاریخ پرداخت (سال / ماه / روز)</label>
+  <div class="dates">
+    <input name="y" inputmode="numeric" aria-label="سال" required class="ltr">
+    <input name="m" inputmode="numeric" aria-label="ماه" required class="ltr">
+    <input name="d" inputmode="numeric" aria-label="روز" required class="ltr">
+  </div>
+  <p class="err" role="alert" id="errPay"></p>
+  <div class="row"><button class="main" type="submit">ثبت پرداخت</button><button type="button" id="cancelPay">انصراف</button></div>
 </form>
 </dialog>
 
@@ -156,7 +174,7 @@ const del = (s, id) => tx(s, 'readwrite', o => o.delete(id));
 // ---- navigation ----
 async function render() {
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.v === view));
-  const V = { accounts: ['حساب‌ها', 'حساب جدید', renderAccounts], tx: ['تراکنش‌ها', 'تراکنش جدید', renderTx], loans: ['وام‌ها', 'وام جدید', renderLoans] }[view];
+  const V = { accounts: ['حساب‌ها', 'حساب جدید', renderAccounts], tx: ['تراکنش‌ها', 'تراکنش جدید', renderTx], loans: ['سررسیدها', 'وام جدید', renderLoans] }[view];
   $('#title').textContent = V[0];
   $('#add').textContent = V[1];
   await V[2]();
@@ -203,7 +221,7 @@ function openAccount(a) {
   editingId = a ? a.id : null;
   $('#accTitle').textContent = a ? 'ویرایش حساب' : 'حساب جدید';
   if (a) {
-    formAcc.name.value = a.name; formAcc.type.value = a.type; formAcc.opening.value = a.opening;
+    formAcc.name.value = a.name; formAcc.type.value = a.type; formAcc.opening.value = a.opening.toLocaleString('en-US');
     formAcc.number.value = a.number || ''; formAcc.iban.value = a.iban || '';
   }
   toggleBankFields();
@@ -255,55 +273,76 @@ $('#list').addEventListener('click', async e => {
 });
 
 // ================= LOANS =================
-function nextDue(l) {
-  const [y, m] = l.due;
-  return [y, m, Math.min(l.dueDay, Jal.monthDays(y, m))];
+// A loan stores an anchor (paid count + next due month at entry time). Installment payments are
+// expense transactions linked with ref = {kind:'loan', id}; paid count and next due are derived from them.
+const addMonths = (y, m, k) => { const t = y * 12 + (m - 1) + k; return [Math.floor(t / 12), ((t % 12) + 12) % 12 + 1]; };
+const linkedTx = (l, txs) => txs.filter(t => t.ref && t.ref.kind === 'loan' && t.ref.id === l.id);
+function loanState(l, txs) {
+  const k = linkedTx(l, txs).length;
+  const [ay, am] = l.anchorDue || l.due; // l.due / l.paid: format of loans saved by older versions
+  const [y, m] = addMonths(ay, am, k);
+  return { k, paid: (l.anchorPaid != null ? l.anchorPaid : l.paid) + k, due: [y, m, Math.min(l.dueDay, Jal.monthDays(y, m))] };
 }
 const fmtDate = ([y, m, d]) => `${fa(d)} ${Jal.MONTHS[m - 1]} ${String(fa(y)).replace(/٬/g, '')}`;
-function describe(l) {
-  const diff = Jal.toDayNum(...nextDue(l)) - Jal.todayNum();
+function describe(due) {
+  const diff = Jal.toDayNum(...due) - Jal.todayNum();
   if (diff < 0) return { diff, cls: 'bad', text: `${fa(-diff)} روز عقب‌افتاده` };
   if (diff === 0) return { diff, cls: 'bad', text: 'سررسید امروز' };
   if (diff <= 7) return { diff, cls: 'warn', text: `${fa(diff)} روز دیگه` };
   return { diff, cls: 'ok', text: `${fa(diff)} روز دیگه` };
 }
 async function renderLoans() {
-  const loans = await getAll('loans');
-  const active = loans.filter(l => l.paid < l.total).map(l => ({ l, s: describe(l) })).sort((a, b) => a.s.diff - b.s.diff);
-  const done = loans.filter(l => l.paid >= l.total);
+  const [loans, txs] = await Promise.all([getAll('loans'), getAll('transactions')]);
+  const items = loans.map(l => { const st = loanState(l, txs); return { l, st, s: st.paid < l.total ? describe(st.due) : null }; });
+  const active = items.filter(x => x.s).sort((a, b) => a.s.diff - b.s.diff);
+  const done = items.filter(x => !x.s);
   const urgent = active.filter(x => x.s.diff <= 7).length;
   $('#summary').textContent = !loans.length ? '' : urgent ? `${fa(urgent)} قسط تا ۷ روز آینده یا عقب‌افتاده` : 'قسطی تا ۷ روز آینده نداری';
-  const card = (l, s) => `
+  const card = ({ l, st, s }) => `
     <article class="card ${s ? s.cls : ''}">
       <h2>${esc(l.title)}</h2>
-      ${s ? `<div class="status">${s.text}</div><div class="meta">سررسید ${fmtDate(nextDue(l))} · مبلغ ${fa(l.amount)} ریال</div>` : `<div class="status">تسویه شد</div>`}
-      <div class="meta">${fa(l.paid)} از ${fa(l.total)} قسط پرداخت شده${s ? ` · مانده ${fa((l.total - l.paid) * l.amount)} ریال` : ''}</div>
+      ${s ? `<div class="status">${s.text}</div><div class="meta">سررسید ${fmtDate(st.due)} · مبلغ ${fa(l.amount)} ریال</div>` : `<div class="status">تسویه شد</div>`}
+      <div class="meta">${fa(st.paid)} از ${fa(l.total)} قسط پرداخت شده${s ? ` · مانده ${fa((l.total - st.paid) * l.amount)} ریال` : ''}</div>
+      ${l.principal ? `<div class="meta">مبلغ کل وام: ${fa(l.principal)} ریال</div>` : ''}
       <div class="row">
-        ${s ? `<button class="main" data-act="pay" data-id="${l.id}">قسط پرداخت شد</button>` : ''}
+        ${s ? `<button class="main" data-act="pay" data-id="${l.id}">پرداخت قسط</button>` : ''}
+        <button data-act="ledit" data-id="${l.id}">ویرایش</button>
         <button data-act="del" data-id="${l.id}">حذف</button>
       </div>
     </article>`;
   $('#list').innerHTML = loans.length
-    ? active.map(x => card(x.l, x.s)).join('') + done.map(l => card(l, null)).join('')
+    ? active.map(card).join('') + done.map(card).join('')
     : '<p class="empty">هنوز وامی ثبت نکردی.<br>با دکمه «وام جدید» شروع کن.</p>';
 }
 async function loanAction(act, id) {
-  const l = (await getAll('loans')).find(x => x.id === id);
+  const [loans, txs] = await Promise.all([getAll('loans'), getAll('transactions')]);
+  const l = loans.find(x => x.id === id);
   if (!l) return;
-  if (act === 'pay') {
-    l.paid++;
-    let [y, m] = l.due; m++; if (m > 12) { m = 1; y++; }
-    l.due = [y, m];
-    await put('loans', l);
-  } else if (act === 'del' && confirm(`وام «${l.title}» حذف بشه؟`)) {
+  if (act === 'pay') return openPay(l, loanState(l, txs));
+  if (act === 'ledit') return openLoan(l);
+  if (act === 'del' && confirm(`وام «${l.title}» حذف بشه؟ تراکنش‌های پرداخت قسط حذف نمی‌شن.`)) {
+    for (const t of linkedTx(l, txs)) await put('transactions', { ...t, ref: null });
     await del('loans', id);
   }
 }
+
+// ---- add / edit loan ----
 const dlgLoan = $('#dlgLoan'), formLoan = $('#formLoan');
-function openLoan() {
+let editingLoan = null;
+async function openLoan(l) {
   formLoan.reset();
-  const [y, m, d] = Jal.fromDayNum(Jal.todayNum());
-  formLoan.y.value = y; formLoan.m.value = m; formLoan.d.value = d;
+  editingLoan = l ? l.id : null;
+  $('#loanTitle').textContent = l ? 'ویرایش وام' : 'وام جدید';
+  let date = Jal.fromDayNum(Jal.todayNum());
+  if (l) {
+    const st = loanState(l, await getAll('transactions'));
+    formLoan.title.value = l.title;
+    formLoan.principal.value = l.principal ? l.principal.toLocaleString('en-US') : '';
+    formLoan.amount.value = l.amount.toLocaleString('en-US');
+    formLoan.total.value = l.total; formLoan.paid.value = st.paid;
+    date = st.due;
+  }
+  formLoan.y.value = date[0]; formLoan.m.value = date[1]; formLoan.d.value = date[2];
   $('#errLoan').textContent = '';
   dlgLoan.showModal();
 }
@@ -312,14 +351,64 @@ formLoan.addEventListener('submit', async e => {
   e.preventDefault();
   const v = Object.fromEntries(new FormData(formLoan));
   const n = Object.fromEntries(['amount', 'total', 'paid', 'y', 'm', 'd'].map(k => [k, toInt(v[k])]));
+  const principal = v.principal.trim() ? toInt(v.principal) : 0;
   let err = '';
-  if (Object.values(n).some(Number.isNaN)) err = 'همه عددها باید صحیح باشن.';
+  if (Object.values(n).some(Number.isNaN) || Number.isNaN(principal)) err = 'همه عددها باید صحیح باشن.';
   else if (n.amount < 1 || n.total < 1) err = 'مبلغ قسط و تعداد اقساط باید بیشتر از صفر باشه.';
   else if (n.paid > n.total) err = 'اقساط پرداخت‌شده بیشتر از کل اقساطه.';
   else if (n.m < 1 || n.m > 12 || n.d < 1 || n.d > Jal.monthDays(n.y, n.m)) err = 'تاریخ سررسید معتبر نیست.';
+  let k = 0;
+  if (!err && editingLoan) {
+    const loan = (await getAll('loans')).find(x => x.id === editingLoan);
+    k = linkedTx(loan, await getAll('transactions')).length;
+    if (n.paid < k) err = `تعداد پرداخت‌شده نمی‌تونه کمتر از ${fa(k)} باشه، چون ${fa(k)} قسط از طریق تراکنش ثبت شده.`;
+  }
   if (err) { $('#errLoan').textContent = err; return; }
-  await put('loans', { title: v.title.trim(), amount: n.amount, total: n.total, paid: n.paid, due: [n.y, n.m], dueDay: n.d });
+  const rec = { title: v.title.trim(), principal, amount: n.amount, total: n.total,
+    anchorPaid: n.paid - k, anchorDue: addMonths(n.y, n.m, -k), dueDay: n.d };
+  if (editingLoan) rec.id = editingLoan;
+  await put('loans', rec);
   dlgLoan.close();
+  render();
+});
+
+// ---- pay an installment (creates a linked expense transaction) ----
+const dlgPay = $('#dlgPay'), formPay = $('#formPay');
+let payCtx = null;
+async function openPay(l, st) {
+  const [accounts, txs] = await Promise.all([getAll('accounts'), getAll('transactions')]);
+  const bal = computeBalances(accounts, txs);
+  const active = accounts.filter(a => !a.archived);
+  if (!active.length) { alert('اول توی بخش حساب‌ها یه حساب بساز.'); return; }
+  payCtx = { l, st };
+  formPay.reset();
+  formPay.account.innerHTML = active.map(a => `<option value="${a.id}">${esc(a.name)} (مانده ${fa(bal.get(a.id))})</option>`).join('');
+  formPay.amount.value = l.amount.toLocaleString('en-US');
+  const [y, m, d] = Jal.fromDayNum(Jal.todayNum());
+  formPay.y.value = y; formPay.m.value = m; formPay.d.value = d;
+  $('#payTitle').textContent = `قسط ${fa(st.paid + 1)} از ${fa(l.total)} · ${l.title}`;
+  $('#errPay').textContent = '';
+  dlgPay.showModal();
+}
+$('#cancelPay').onclick = () => dlgPay.close();
+formPay.addEventListener('submit', async e => {
+  e.preventDefault();
+  const v = Object.fromEntries(new FormData(formPay));
+  const n = Object.fromEntries(['amount', 'fee', 'y', 'm', 'd'].map(k => [k, toInt(v[k] || '0')]));
+  let err = '';
+  if (Object.values(n).some(Number.isNaN)) err = 'همه عددها باید صحیح باشن.';
+  else if (n.amount < 1) err = 'مبلغ باید بیشتر از صفر باشه.';
+  else if (n.m < 1 || n.m > 12 || n.d < 1 || n.d > Jal.monthDays(n.y, n.m)) err = 'تاریخ معتبر نیست.';
+  if (err) { $('#errPay').textContent = err; return; }
+  const { l, st } = payCtx;
+  const rec = { type: 'expense', accountId: Number(v.account), amount: n.amount, fee: n.fee,
+    note: `${l.title} · قسط ${fa(st.paid + 1)} از ${fa(l.total)}`, date: [n.y, n.m, n.d], day: Jal.toDayNum(n.y, n.m, n.d),
+    category: 'اقساط و بدهی‌ها', sub: 'قسط', ref: { kind: 'loan', id: l.id } };
+  const accounts = await getAll('accounts');
+  const neg = firstNegative(accounts, [...(await getAll('transactions')), rec]);
+  if (neg) { $('#errPay').textContent = `با این پرداخت، مانده حساب «${neg.name}» منفی می‌شه.`; return; }
+  await put('transactions', rec);
+  dlgPay.close();
   render();
 });
 
@@ -360,7 +449,7 @@ async function renderTx() {
     return `<article class="card ${cls}">
       <h2>${title}</h2>
       <div class="status">${sign}${fa(t.amount)} ریال</div>
-      <div class="meta">${fmtFull(t.date)}${t.type !== 'transfer' ? ' · ' + esc(nm(t.accountId)) : ''}${t.fee ? ` · کارمزد ${fa(t.fee)}` : ''}</div>
+      <div class="meta">${fmtFull(t.date)}${t.type !== 'transfer' ? ' · ' + esc(nm(t.accountId)) : ''}${t.fee ? ` · کارمزد ${fa(t.fee)}` : ''}${t.ref && t.ref.kind === 'loan' ? ' · قسط وام' : ''}</div>
       ${t.note ? `<div class="meta">${esc(t.note)}</div>` : ''}
       <div class="row"><button data-act="txedit" data-id="${t.id}">ویرایش</button><button data-act="txdel" data-id="${t.id}">حذف</button></div>
     </article>`;
@@ -369,7 +458,7 @@ async function renderTx() {
 }
 
 const dlgTx = $('#dlgTx'), formTx = $('#formTx');
-let editingTx = null, txAccounts = [];
+let editingTx = null, editingTxRef = null, txAccounts = [];
 function fillAccountSelects(extraIds) {
   const opts = txAccounts.filter(a => !a.archived || extraIds.includes(a.id)).map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
   formTx.accountId.innerHTML = opts; formTx.toId.innerHTML = opts;
@@ -405,6 +494,7 @@ async function openTx(t) {
   if (!txAccounts.some(a => !a.archived)) { alert('اول توی بخش حساب‌ها یه حساب بساز.'); return; }
   formTx.reset();
   editingTx = t ? t.id : null;
+  editingTxRef = t ? (t.ref || null) : null;
   $('#txTitle').textContent = t ? 'ویرایش تراکنش' : 'تراکنش جدید';
   fillAccountSelects(extra);
   const [y, m, d] = t ? t.date : Jal.fromDayNum(Jal.todayNum());
@@ -412,7 +502,7 @@ async function openTx(t) {
   if (t) {
     formTx.type.value = t.type; syncTxType();
     formTx.accountId.value = t.accountId; if (t.toAccountId) formTx.toId.value = t.toAccountId;
-    formTx.amount.value = t.amount; formTx.fee.value = t.fee; formTx.note.value = t.note || '';
+    formTx.amount.value = t.amount.toLocaleString('en-US'); formTx.fee.value = t.fee.toLocaleString('en-US'); formTx.note.value = t.note || '';
     if (t.type !== 'transfer') fillCategories(t.category, t.sub);
   } else syncTxType();
   $('#errTx').textContent = '';
@@ -431,7 +521,7 @@ formTx.addEventListener('submit', async e => {
   else if (v.type === 'transfer' && v.accountId === v.toId) err = 'حساب مبدأ و مقصد نباید یکی باشن.';
   if (err) { $('#errTx').textContent = err; return; }
   const rec = { type: v.type, accountId: Number(v.accountId), amount: n.amount, fee: n.fee, note: v.note.trim(),
-    date: [n.y, n.m, n.d], day: Jal.toDayNum(n.y, n.m, n.d), ref: null };
+    date: [n.y, n.m, n.d], day: Jal.toDayNum(n.y, n.m, n.d), ref: editingTxRef };
   if (v.type === 'transfer') rec.toAccountId = Number(v.toId);
   else { rec.category = v.category; rec.sub = v.sub || ''; }
   if (editingTx) rec.id = editingTx;
@@ -454,6 +544,19 @@ async function txAction(act, id) {
   if (neg) { alert(`حذف این تراکنش مانده حساب «${neg.name}» رو منفی می‌کنه.`); return; }
   await del('transactions', id);
 }
+
+// ---- live thousands separator for .money inputs ----
+document.addEventListener('input', e => {
+  const el = e.target;
+  if (!el.classList || !el.classList.contains('money')) return;
+  const caret = el.selectionStart == null ? el.value.length : el.selectionStart;
+  const digitsBefore = Util.norm(el.value.slice(0, caret)).replace(/\D/g, '').length;
+  const digits = Util.norm(el.value).replace(/\D/g, '').slice(0, 15);
+  el.value = digits ? Number(digits).toLocaleString('en-US') : '';
+  let pos = 0, seen = 0;
+  while (pos < el.value.length && seen < digitsBefore) { if (/\d/.test(el.value[pos])) seen++; pos++; }
+  try { el.setSelectionRange(pos, pos); } catch (_) {}
+});
 
 // ---- start ----
 (async () => {
