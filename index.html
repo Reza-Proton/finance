@@ -25,7 +25,10 @@ h3.sep{margin:12px 0 0;font-size:15px;color:var(--mut);font-weight:400}
 .bad .status{color:var(--bad)}.warn .status{color:var(--warn)}.ok .status{color:var(--ok)}
 .meta{color:var(--mut);font-size:14px}
 .ltr{direction:ltr;unicode-bidi:plaintext;text-align:right;font-variant-numeric:tabular-nums}
-.row{display:flex;gap:8px;margin-top:10px}
+.row{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.dates2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+label.chk{display:flex;align-items:center;gap:8px}
+input[type=checkbox]{width:auto;min-height:0}
 button{font:inherit;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--ink);padding:8px 12px;min-height:44px}
 button.main{background:var(--acc);color:var(--onacc);border-color:var(--acc);flex:1}
 button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
@@ -137,6 +140,34 @@ addEventListener('error', function (e) {
 </form>
 </dialog>
 
+<dialog id="dlgChoose">
+  <h3>چی اضافه کنم؟</h3>
+  <div class="row" style="flex-direction:column">
+    <button class="main" id="chooseLoan">وام جدید</button>
+    <button class="main" id="chooseRec">پرداخت دوره‌ای جدید</button>
+    <button id="chooseCancel">انصراف</button>
+  </div>
+</dialog>
+
+<dialog id="dlgRec">
+<form id="formRec">
+  <h3 id="recTitle"></h3>
+  <label>عنوان<input name="title" required maxlength="60"></label>
+  <label>مبلغ پیش‌فرض (ریال)<input name="amount" inputmode="numeric" required class="ltr money"></label>
+  <label>دسته‌بندی<select name="category"></select></label>
+  <label id="lblRecSub">زیردسته<select name="sub"></select></label>
+  <label>حساب پیش‌فرض (اختیاری)<select name="accountId"></select></label>
+  <label>روز سررسید هر ماه<input name="dueDay" inputmode="numeric" required class="ltr"></label>
+  <label>ماه شروع (سال / ماه)</label>
+  <div class="dates2"><input name="sy" inputmode="numeric" aria-label="سال شروع" required class="ltr"><input name="sm" inputmode="numeric" aria-label="ماه شروع" required class="ltr"></div>
+  <label>ماه پایان (اختیاری، سال / ماه)</label>
+  <div class="dates2"><input name="ey" inputmode="numeric" aria-label="سال پایان" class="ltr"><input name="em" inputmode="numeric" aria-label="ماه پایان" class="ltr"></div>
+  <label class="chk" id="lblClear" hidden><input type="checkbox" name="clearSkipped"> پاک کردن ماه‌های ردشده</label>
+  <p class="err" role="alert" id="errRec"></p>
+  <div class="row"><button class="main" type="submit">ذخیره</button><button type="button" id="cancelRec">انصراف</button></div>
+</form>
+</dialog>
+
 <script src="jalali.js"></script>
 <script src="util.js"></script>
 <script src="categories.js"></script>
@@ -150,9 +181,9 @@ let db, view = 'accounts';
 // ---- storage (IndexedDB) ----
 function openDb() {
   return new Promise((res, rej) => {
-    const r = indexedDB.open('finance', 3);
+    const r = indexedDB.open('finance', 4);
     r.onupgradeneeded = () => {
-      for (const n of ['loans', 'accounts', 'transactions'])
+      for (const n of ['loans', 'accounts', 'transactions', 'recurring'])
         if (!r.result.objectStoreNames.contains(n)) r.result.createObjectStore(n, { keyPath: 'id', autoIncrement: true });
     };
     r.onsuccess = () => res(r.result);
@@ -174,7 +205,7 @@ const del = (s, id) => tx(s, 'readwrite', o => o.delete(id));
 // ---- navigation ----
 async function render() {
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.v === view));
-  const V = { accounts: ['حساب‌ها', 'حساب جدید', renderAccounts], tx: ['تراکنش‌ها', 'تراکنش جدید', renderTx], loans: ['سررسیدها', 'وام جدید', renderLoans] }[view];
+  const V = { accounts: ['حساب‌ها', 'حساب جدید', renderAccounts], tx: ['تراکنش‌ها', 'تراکنش جدید', renderTx], loans: ['سررسیدها', 'افزودن', renderLoans] }[view];
   $('#title').textContent = V[0];
   $('#add').textContent = V[1];
   await V[2]();
@@ -183,7 +214,7 @@ $('#nav').addEventListener('click', e => {
   const b = e.target.closest('button[data-v]');
   if (b) { view = b.dataset.v; render(); }
 });
-$('#add').onclick = () => ({ accounts: openAccount, tx: openTx, loans: openLoan }[view])();
+$('#add').onclick = () => ({ accounts: openAccount, tx: openTx, loans: openChoose }[view])();
 
 // ================= ACCOUNTS =================
 // Balance is always computed. Transactions will be added here later.
@@ -259,6 +290,7 @@ $('#list').addEventListener('click', async e => {
   if (!b) return;
   const id = Number(b.dataset.id), act = b.dataset.act;
   if (act.startsWith('tx')) { await txAction(act, id); render(); return; }
+  if (act.startsWith('r')) { await recAction(act, id); render(); return; }
   if (act === 'edit' || act === 'arch') {
     const a = (await getAll('accounts')).find(x => x.id === id);
     if (!a) return;
@@ -291,13 +323,35 @@ function describe(due) {
   if (diff <= 7) return { diff, cls: 'warn', text: `${fa(diff)} روز دیگه` };
   return { diff, cls: 'ok', text: `${fa(diff)} روز دیگه` };
 }
+const monthLabel = (y, m) => `${Jal.MONTHS[m - 1]} ${String(fa(y)).replace(/٬/g, '')}`;
+// Recurring payment: one period per month; a period is done when a linked transaction exists or it was skipped.
+function recState(r, txs) {
+  const paid = new Set(txs.filter(t => t.ref && t.ref.kind === 'rec' && t.ref.id === r.id).map(t => t.ref.period));
+  const skipped = new Set(r.skipped || []);
+  const endIdx = r.end ? r.end[0] * 12 + r.end[1] : Infinity;
+  let [y, m] = r.start, next = null, overdue = 0;
+  for (let i = 0; i < 600; i++) {
+    if (y * 12 + m > endIdx) break;
+    const key = `${y}-${m}`;
+    if (!paid.has(key) && !skipped.has(key)) {
+      const due = [y, m, Math.min(r.dueDay, Jal.monthDays(y, m))];
+      if (!next) next = { period: key, y, m, due };
+      if (Jal.toDayNum(...due) < Jal.todayNum()) overdue++; else break;
+    }
+    [y, m] = addMonths(y, m, 1);
+  }
+  return { next, overdue };
+}
 async function renderLoans() {
-  const [loans, txs] = await Promise.all([getAll('loans'), getAll('transactions')]);
+  const [loans, recs, txs] = await Promise.all([getAll('loans'), getAll('recurring'), getAll('transactions')]);
   const items = loans.map(l => { const st = loanState(l, txs); return { l, st, s: st.paid < l.total ? describe(st.due) : null }; });
   const active = items.filter(x => x.s).sort((a, b) => a.s.diff - b.s.diff);
   const done = items.filter(x => !x.s);
-  const urgent = active.filter(x => x.s.diff <= 7).length;
-  $('#summary').textContent = !loans.length ? '' : urgent ? `${fa(urgent)} قسط تا ۷ روز آینده یا عقب‌افتاده` : 'قسطی تا ۷ روز آینده نداری';
+  const ritems = recs.map(r => { const st = recState(r, txs); return { r, st, s: st.next ? describe(st.next.due) : null }; });
+  const ractive = ritems.filter(x => x.s).sort((a, b) => a.s.diff - b.s.diff);
+  const rdone = ritems.filter(x => !x.s);
+  const urgent = active.filter(x => x.s.diff <= 7).length + ractive.filter(x => x.s.diff <= 7).length;
+  $('#summary').textContent = !(loans.length + recs.length) ? '' : urgent ? `${fa(urgent)} مورد تا ۷ روز آینده یا عقب‌افتاده` : 'سررسیدی تا ۷ روز آینده نداری';
   const card = ({ l, st, s }) => `
     <article class="card ${s ? s.cls : ''}">
       <h2>${esc(l.title)}</h2>
@@ -310,9 +364,24 @@ async function renderLoans() {
         <button data-act="del" data-id="${l.id}">حذف</button>
       </div>
     </article>`;
-  $('#list').innerHTML = loans.length
-    ? active.map(card).join('') + done.map(card).join('')
-    : '<p class="empty">هنوز وامی ثبت نکردی.<br>با دکمه «وام جدید» شروع کن.</p>';
+  const rcard = ({ r, st, s }) => `
+    <article class="card ${s ? s.cls : ''}">
+      <h2>${esc(r.title)}</h2>
+      ${s ? `<div class="status">${s.text}${st.overdue > 1 ? ` · ${fa(st.overdue)} ماه پرداخت‌نشده` : ''}</div>
+        <div class="meta">${monthLabel(st.next.y, st.next.m)} · سررسید ${fmtDate(st.next.due)} · مبلغ ${fa(r.amount)} ریال</div>`
+        : `<div class="status">پایان یافته</div>`}
+      <div class="meta">${esc(r.category)}${r.sub ? ' · ' + esc(r.sub) : ''}</div>
+      <div class="row">
+        ${s ? `<button class="main" data-act="rpay" data-id="${r.id}">پرداخت</button><button data-act="rskip" data-id="${r.id}">رد شدن این ماه</button>` : ''}
+        <button data-act="redit" data-id="${r.id}">ویرایش</button>
+        <button data-act="rdel" data-id="${r.id}">حذف</button>
+      </div>
+    </article>`;
+  const loansHtml = active.map(card).join('') + done.map(card).join('');
+  const recHtml = ractive.map(rcard).join('') + rdone.map(rcard).join('');
+  $('#list').innerHTML = (loans.length + recs.length)
+    ? (loansHtml ? '<h3 class="sep">وام‌ها</h3>' + loansHtml : '') + (recHtml ? '<h3 class="sep">پرداخت‌های دوره‌ای</h3>' + recHtml : '')
+    : '<p class="empty">هنوز وام یا پرداخت دوره‌ای ثبت نکردی.<br>با دکمه «افزودن» شروع کن.</p>';
 }
 async function loanAction(act, id) {
   const [loans, txs] = await Promise.all([getAll('loans'), getAll('transactions')]);
@@ -380,7 +449,7 @@ async function openPay(l, st) {
   const bal = computeBalances(accounts, txs);
   const active = accounts.filter(a => !a.archived);
   if (!active.length) { alert('اول توی بخش حساب‌ها یه حساب بساز.'); return; }
-  payCtx = { l, st };
+  payCtx = { kind: 'loan', l, st };
   formPay.reset();
   formPay.account.innerHTML = active.map(a => `<option value="${a.id}">${esc(a.name)} (مانده ${fa(bal.get(a.id))})</option>`).join('');
   formPay.amount.value = l.amount.toLocaleString('en-US');
@@ -400,10 +469,13 @@ formPay.addEventListener('submit', async e => {
   else if (n.amount < 1) err = 'مبلغ باید بیشتر از صفر باشه.';
   else if (n.m < 1 || n.m > 12 || n.d < 1 || n.d > Jal.monthDays(n.y, n.m)) err = 'تاریخ معتبر نیست.';
   if (err) { $('#errPay').textContent = err; return; }
-  const { l, st } = payCtx;
-  const rec = { type: 'expense', accountId: Number(v.account), amount: n.amount, fee: n.fee,
-    note: `${l.title} · قسط ${fa(st.paid + 1)} از ${fa(l.total)}`, date: [n.y, n.m, n.d], day: Jal.toDayNum(n.y, n.m, n.d),
-    category: 'اقساط و بدهی‌ها', sub: 'قسط', ref: { kind: 'loan', id: l.id } };
+  const base = { type: 'expense', accountId: Number(v.account), amount: n.amount, fee: n.fee,
+    date: [n.y, n.m, n.d], day: Jal.toDayNum(n.y, n.m, n.d) };
+  const rec = payCtx.kind === 'rec'
+    ? { ...base, note: `${payCtx.r.title} · ${monthLabel(payCtx.next.y, payCtx.next.m)}`, category: payCtx.r.category, sub: payCtx.r.sub || '',
+        ref: { kind: 'rec', id: payCtx.r.id, period: payCtx.next.period } }
+    : { ...base, note: `${payCtx.l.title} · قسط ${fa(payCtx.st.paid + 1)} از ${fa(payCtx.l.total)}`,
+        category: 'اقساط و بدهی‌ها', sub: 'قسط', ref: { kind: 'loan', id: payCtx.l.id } };
   const accounts = await getAll('accounts');
   const neg = firstNegative(accounts, [...(await getAll('transactions')), rec]);
   if (neg) { $('#errPay').textContent = `با این پرداخت، مانده حساب «${neg.name}» منفی می‌شه.`; return; }
@@ -411,6 +483,100 @@ formPay.addEventListener('submit', async e => {
   dlgPay.close();
   render();
 });
+
+// ---- recurring payments ----
+const dlgChoose = $('#dlgChoose'), dlgRec = $('#dlgRec'), formRec = $('#formRec');
+function openChoose() { dlgChoose.showModal(); }
+$('#chooseLoan').onclick = () => { dlgChoose.close(); openLoan(); };
+$('#chooseRec').onclick = () => { dlgChoose.close(); openRec(); };
+$('#chooseCancel').onclick = () => dlgChoose.close();
+
+let editingRec = null;
+function fillRecSubs(keepSub) {
+  const subs = CATS.expense[formRec.category.value] || [];
+  formRec.sub.innerHTML = subs.map(s => `<option>${esc(s)}</option>`).join('');
+  if (keepSub && subs.includes(keepSub)) formRec.sub.value = keepSub;
+  $('#lblRecSub').hidden = !subs.length;
+}
+formRec.category.addEventListener('change', () => fillRecSubs());
+async function openRec(r) {
+  const accounts = (await getAll('accounts')).filter(a => !a.archived);
+  formRec.reset();
+  editingRec = r ? r.id : null;
+  $('#recTitle').textContent = r ? 'ویرایش پرداخت دوره‌ای' : 'پرداخت دوره‌ای جدید';
+  formRec.category.innerHTML = Object.keys(CATS.expense).map(c => `<option>${esc(c)}</option>`).join('');
+  formRec.accountId.innerHTML = '<option value="">— بدون پیش‌فرض —</option>' + accounts.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+  const [ty, tm] = Jal.fromDayNum(Jal.todayNum());
+  formRec.sy.value = ty; formRec.sm.value = tm;
+  if (r) {
+    formRec.title.value = r.title; formRec.amount.value = r.amount.toLocaleString('en-US');
+    formRec.category.value = r.category; fillRecSubs(r.sub);
+    if (r.accountId && accounts.some(a => a.id === r.accountId)) formRec.accountId.value = r.accountId;
+    formRec.dueDay.value = r.dueDay; formRec.sy.value = r.start[0]; formRec.sm.value = r.start[1];
+    if (r.end) { formRec.ey.value = r.end[0]; formRec.em.value = r.end[1]; }
+  } else fillRecSubs();
+  $('#lblClear').hidden = !(r && r.skipped && r.skipped.length);
+  $('#errRec').textContent = '';
+  dlgRec.showModal();
+}
+$('#cancelRec').onclick = () => dlgRec.close();
+formRec.addEventListener('submit', async e => {
+  e.preventDefault();
+  const v = Object.fromEntries(new FormData(formRec));
+  const n = Object.fromEntries(['amount', 'dueDay', 'sy', 'sm'].map(k => [k, toInt(v[k])]));
+  const hasEnd = v.ey.trim() || v.em.trim();
+  const ey = hasEnd ? toInt(v.ey) : 0, em = hasEnd ? toInt(v.em) : 0;
+  let err = '';
+  if (Object.values(n).some(Number.isNaN) || Number.isNaN(ey) || Number.isNaN(em)) err = 'همه عددها باید صحیح باشن.';
+  else if (n.amount < 1) err = 'مبلغ باید بیشتر از صفر باشه.';
+  else if (n.dueDay < 1 || n.dueDay > 31) err = 'روز سررسید باید بین ۱ تا ۳۱ باشه.';
+  else if (n.sm < 1 || n.sm > 12 || n.sy < 1300) err = 'ماه شروع معتبر نیست.';
+  else if (hasEnd && (em < 1 || em > 12 || ey < 1300)) err = 'ماه پایان معتبر نیست.';
+  else if (hasEnd && ey * 12 + em < n.sy * 12 + n.sm) err = 'ماه پایان نباید قبل از ماه شروع باشه.';
+  if (err) { $('#errRec').textContent = err; return; }
+  let skipped = [];
+  if (editingRec) {
+    const old = (await getAll('recurring')).find(x => x.id === editingRec);
+    skipped = v.clearSkipped ? [] : (old.skipped || []);
+  }
+  const rec = { title: v.title.trim(), amount: n.amount, category: v.category, sub: v.sub || '',
+    accountId: v.accountId ? Number(v.accountId) : null, dueDay: n.dueDay, start: [n.sy, n.sm], end: hasEnd ? [ey, em] : null, skipped };
+  if (editingRec) rec.id = editingRec;
+  await put('recurring', rec);
+  dlgRec.close();
+  render();
+});
+async function openPayRec(r, next) {
+  const [accounts, txs] = await Promise.all([getAll('accounts'), getAll('transactions')]);
+  const bal = computeBalances(accounts, txs);
+  const active = accounts.filter(a => !a.archived);
+  if (!active.length) { alert('اول توی بخش حساب‌ها یه حساب بساز.'); return; }
+  payCtx = { kind: 'rec', r, next };
+  formPay.reset();
+  formPay.account.innerHTML = active.map(a => `<option value="${a.id}">${esc(a.name)} (مانده ${fa(bal.get(a.id))})</option>`).join('');
+  if (r.accountId && active.some(a => a.id === r.accountId)) formPay.account.value = r.accountId;
+  formPay.amount.value = r.amount.toLocaleString('en-US');
+  const [y, m, d] = Jal.fromDayNum(Jal.todayNum());
+  formPay.y.value = y; formPay.m.value = m; formPay.d.value = d;
+  $('#payTitle').textContent = `${r.title} · ${monthLabel(next.y, next.m)}`;
+  $('#errPay').textContent = '';
+  dlgPay.showModal();
+}
+async function recAction(act, id) {
+  const [recs, txs] = await Promise.all([getAll('recurring'), getAll('transactions')]);
+  const r = recs.find(x => x.id === id);
+  if (!r) return;
+  const st = recState(r, txs);
+  if (act === 'rpay') return st.next && openPayRec(r, st.next);
+  if (act === 'redit') return openRec(r);
+  if (act === 'rskip' && st.next && confirm(`ماه ${monthLabel(st.next.y, st.next.m)} برای «${r.title}» رد بشه؟`)) {
+    r.skipped = [...(r.skipped || []), st.next.period];
+    await put('recurring', r);
+  } else if (act === 'rdel' && confirm(`«${r.title}» حذف بشه؟ تراکنش‌های پرداخت‌شده حذف نمی‌شن.`)) {
+    for (const t of txs.filter(t => t.ref && t.ref.kind === 'rec' && t.ref.id === id)) await put('transactions', { ...t, ref: null });
+    await del('recurring', id);
+  }
+}
 
 // ================= TRANSACTIONS =================
 // Balance = opening + income - expense(amount+fee) - transfer out(amount+fee) + transfer in(amount)
@@ -449,7 +615,7 @@ async function renderTx() {
     return `<article class="card ${cls}">
       <h2>${title}</h2>
       <div class="status">${sign}${fa(t.amount)} ریال</div>
-      <div class="meta">${fmtFull(t.date)}${t.type !== 'transfer' ? ' · ' + esc(nm(t.accountId)) : ''}${t.fee ? ` · کارمزد ${fa(t.fee)}` : ''}${t.ref && t.ref.kind === 'loan' ? ' · قسط وام' : ''}</div>
+      <div class="meta">${fmtFull(t.date)}${t.type !== 'transfer' ? ' · ' + esc(nm(t.accountId)) : ''}${t.fee ? ` · کارمزد ${fa(t.fee)}` : ''}${t.ref ? (t.ref.kind === 'loan' ? ' · قسط وام' : ' · پرداخت دوره‌ای') : ''}</div>
       ${t.note ? `<div class="meta">${esc(t.note)}</div>` : ''}
       <div class="row"><button data-act="txedit" data-id="${t.id}">ویرایش</button><button data-act="txdel" data-id="${t.id}">حذف</button></div>
     </article>`;
