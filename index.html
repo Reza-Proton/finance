@@ -26,6 +26,9 @@ h3.sep{margin:12px 0 0;font-size:15px;color:var(--mut);font-weight:400}
 .meta{color:var(--mut);font-size:14px}
 .ltr{direction:ltr;unicode-bidi:plaintext;text-align:right;font-variant-numeric:tabular-nums}
 .row{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+details{margin-top:12px}
+summary{color:var(--mut);padding:8px 0;min-height:44px}
+details .card{margin-top:12px}
 .dates2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 label.chk{display:flex;align-items:center;gap:8px}
 input[type=checkbox]{width:auto;min-height:0}
@@ -145,6 +148,7 @@ addEventListener('error', function (e) {
   <div class="row" style="flex-direction:column">
     <button class="main" id="chooseLoan">وام جدید</button>
     <button class="main" id="chooseRec">پرداخت دوره‌ای جدید</button>
+    <button class="main" id="chooseCheck">چک جدید</button>
     <button id="chooseCancel">انصراف</button>
   </div>
 </dialog>
@@ -168,6 +172,27 @@ addEventListener('error', function (e) {
 </form>
 </dialog>
 
+<dialog id="dlgCheck">
+<form id="formCheck">
+  <h3 id="checkTitle"></h3>
+  <label>شماره سریال چک<input name="serial" required maxlength="20" class="ltr"></label>
+  <label>مبلغ (ریال)<input name="amount" inputmode="numeric" required class="ltr money"></label>
+  <label>از حساب (بانکی)<select name="accountId"></select></label>
+  <label>تاریخ سررسید (سال / ماه / روز)</label>
+  <div class="dates">
+    <input name="y" inputmode="numeric" aria-label="سال" required class="ltr">
+    <input name="m" inputmode="numeric" aria-label="ماه" required class="ltr">
+    <input name="d" inputmode="numeric" aria-label="روز" required class="ltr">
+  </div>
+  <label>در وجه (اختیاری)<input name="payee" maxlength="60"></label>
+  <label>دسته‌بندی<select name="category"></select></label>
+  <label id="lblCheckSub">زیردسته<select name="sub"></select></label>
+  <label>توضیح (اختیاری)<input name="note" maxlength="100"></label>
+  <p class="err" role="alert" id="errCheck"></p>
+  <div class="row"><button class="main" type="submit">ذخیره چک</button><button type="button" id="cancelCheck">انصراف</button></div>
+</form>
+</dialog>
+
 <script src="jalali.js"></script>
 <script src="util.js"></script>
 <script src="categories.js"></script>
@@ -181,9 +206,9 @@ let db, view = 'accounts';
 // ---- storage (IndexedDB) ----
 function openDb() {
   return new Promise((res, rej) => {
-    const r = indexedDB.open('finance', 4);
+    const r = indexedDB.open('finance', 5);
     r.onupgradeneeded = () => {
-      for (const n of ['loans', 'accounts', 'transactions', 'recurring'])
+      for (const n of ['loans', 'accounts', 'transactions', 'recurring', 'checks'])
         if (!r.result.objectStoreNames.contains(n)) r.result.createObjectStore(n, { keyPath: 'id', autoIncrement: true });
     };
     r.onsuccess = () => res(r.result);
@@ -218,19 +243,22 @@ $('#add').onclick = () => ({ accounts: openAccount, tx: openTx, loans: openChoos
 
 // ================= ACCOUNTS =================
 // Balance is always computed. Transactions will be added here later.
-let BAL = new Map();
+let BAL = new Map(), PEND = new Map();
 const balance = a => (BAL.has(a.id) ? BAL.get(a.id) : a.opening);
 const fmtIban = s => s.replace(/(.{4})/g, '$1 ').trim();
 
 async function renderAccounts() {
   const all = await getAll('accounts');
-  BAL = computeBalances(all, await getAll('transactions'));
+  const txsAll = await getAll('transactions');
+  BAL = computeBalances(all, txsAll);
+  PEND = pendingByAccount(await getAll('checks'), txsAll);
   const active = all.filter(a => !a.archived), archived = all.filter(a => a.archived);
   $('#summary').textContent = active.length ? `جمع مانده‌ها: ${fa(active.reduce((s, a) => s + balance(a), 0))} ریال` : '';
   const card = a => `
     <article class="card acc ${a.archived ? 'arch' : ''}">
       <h2>${esc(a.name)} <span class="meta">· ${a.type === 'cash' ? 'نقد' : 'بانکی'}</span></h2>
       <div class="status">${fa(balance(a))} ریال</div>
+      ${PEND.get(a.id) ? `<div class="meta">چک‌های در جریان: ${fa(PEND.get(a.id))} ریال</div>` : ''}
       ${a.number ? `<div class="meta">شماره حساب: <span class="ltr">${esc(a.number)}</span></div>` : ''}
       ${a.iban ? `<div class="meta">شبا: <span class="ltr">${fmtIban(a.iban)}</span></div>` : ''}
       <div class="row">
@@ -291,6 +319,7 @@ $('#list').addEventListener('click', async e => {
   const id = Number(b.dataset.id), act = b.dataset.act;
   if (act.startsWith('tx')) { await txAction(act, id); render(); return; }
   if (act.startsWith('r')) { await recAction(act, id); render(); return; }
+  if (act.startsWith('c')) { await checkAction(act, id); render(); return; }
   if (act === 'edit' || act === 'arch') {
     const a = (await getAll('accounts')).find(x => x.id === id);
     if (!a) return;
@@ -343,15 +372,18 @@ function recState(r, txs) {
   return { next, overdue };
 }
 async function renderLoans() {
-  const [loans, recs, txs] = await Promise.all([getAll('loans'), getAll('recurring'), getAll('transactions')]);
+  const [loans, recs, txs, checks, accts] = await Promise.all([getAll('loans'), getAll('recurring'), getAll('transactions'), getAll('checks'), getAll('accounts')]);
   const items = loans.map(l => { const st = loanState(l, txs); return { l, st, s: st.paid < l.total ? describe(st.due) : null }; });
   const active = items.filter(x => x.s).sort((a, b) => a.s.diff - b.s.diff);
   const done = items.filter(x => !x.s);
   const ritems = recs.map(r => { const st = recState(r, txs); return { r, st, s: st.next ? describe(st.next.due) : null }; });
   const ractive = ritems.filter(x => x.s).sort((a, b) => a.s.diff - b.s.diff);
   const rdone = ritems.filter(x => !x.s);
-  const urgent = active.filter(x => x.s.diff <= 7).length + ractive.filter(x => x.s.diff <= 7).length;
-  $('#summary').textContent = !(loans.length + recs.length) ? '' : urgent ? `${fa(urgent)} مورد تا ۷ روز آینده یا عقب‌افتاده` : 'سررسیدی تا ۷ روز آینده نداری';
+  const citems = checks.map(c => ({ c, status: checkStatus(c, txs), s: describe(c.due) }));
+  const cactive = citems.filter(x => x.status === 'pending').sort((a, b) => a.s.diff - b.s.diff);
+  const cdone = citems.filter(x => x.status !== 'pending').sort((a, b) => b.c.day - a.c.day);
+  const urgent = active.filter(x => x.s.diff <= 7).length + ractive.filter(x => x.s.diff <= 7).length + cactive.filter(x => x.s.diff <= 7).length;
+  $('#summary').textContent = !(loans.length + recs.length + checks.length) ? '' : urgent ? `${fa(urgent)} مورد تا ۷ روز آینده یا عقب‌افتاده` : 'سررسیدی تا ۷ روز آینده نداری';
   const card = ({ l, st, s }) => `
     <article class="card ${s ? s.cls : ''}">
       <h2>${esc(l.title)}</h2>
@@ -379,9 +411,26 @@ async function renderLoans() {
     </article>`;
   const loansHtml = active.map(card).join('') + done.map(card).join('');
   const recHtml = ractive.map(rcard).join('') + rdone.map(rcard).join('');
-  $('#list').innerHTML = (loans.length + recs.length)
+  const nameOf = id => (accts.find(a => a.id === id) || {}).name || '؟';
+  const ccard = ({ c, status, s }) => `
+    <article class="card ${status === 'pending' ? s.cls : status === 'cleared' ? 'acc' : 'arch'}">
+      <h2>چک ${esc(c.serial)}${c.payee ? ' · ' + esc(c.payee) : ''}</h2>
+      <div class="status">${status === 'pending' ? s.text : status === 'cleared' ? 'پاس شد' : 'باطل شد'}</div>
+      <div class="meta">سررسید ${fmtDate(c.due)} · مبلغ ${fa(c.amount)} ریال · ${esc(nameOf(c.accountId))}</div>
+      <div class="meta">${esc(c.category)}${c.sub ? ' · ' + esc(c.sub) : ''}</div>
+      ${c.note ? `<div class="meta">${esc(c.note)}</div>` : ''}
+      <div class="row">
+        ${status === 'pending' ? `<button class="main" data-act="cclear" data-id="${c.id}">پاس شد</button><button data-act="cedit" data-id="${c.id}">ویرایش</button><button data-act="ccancel" data-id="${c.id}">باطل شد</button>` : ''}
+        ${status === 'cancelled' ? `<button data-act="crestore" data-id="${c.id}">بازگردانی</button>` : ''}
+        <button data-act="cdel" data-id="${c.id}">حذف</button>
+      </div>
+    </article>`;
+  const checkHtml = cactive.map(ccard).join('')
+    + (cdone.length ? `<details><summary>چک‌های پاس‌شده و باطل‌شده (${fa(cdone.length)})</summary>${cdone.map(ccard).join('')}</details>` : '');
+  $('#list').innerHTML = (loans.length + recs.length + checks.length)
     ? (loansHtml ? '<h3 class="sep">وام‌ها</h3>' + loansHtml : '') + (recHtml ? '<h3 class="sep">پرداخت‌های دوره‌ای</h3>' + recHtml : '')
-    : '<p class="empty">هنوز وام یا پرداخت دوره‌ای ثبت نکردی.<br>با دکمه «افزودن» شروع کن.</p>';
+      + (checkHtml ? '<h3 class="sep">چک‌ها</h3>' + checkHtml : '')
+    : '<p class="empty">هنوز وام، پرداخت دوره‌ای یا چکی ثبت نکردی.<br>با دکمه «افزودن» شروع کن.</p>';
 }
 async function loanAction(act, id) {
   const [loans, txs] = await Promise.all([getAll('loans'), getAll('transactions')]);
@@ -450,7 +499,7 @@ async function openPay(l, st) {
   const active = accounts.filter(a => !a.archived);
   if (!active.length) { alert('اول توی بخش حساب‌ها یه حساب بساز.'); return; }
   payCtx = { kind: 'loan', l, st };
-  formPay.reset();
+  formPay.reset(); formPay.amount.readOnly = false;
   formPay.account.innerHTML = active.map(a => `<option value="${a.id}">${esc(a.name)} (مانده ${fa(bal.get(a.id))})</option>`).join('');
   formPay.amount.value = l.amount.toLocaleString('en-US');
   const [y, m, d] = Jal.fromDayNum(Jal.todayNum());
@@ -471,7 +520,10 @@ formPay.addEventListener('submit', async e => {
   if (err) { $('#errPay').textContent = err; return; }
   const base = { type: 'expense', accountId: Number(v.account), amount: n.amount, fee: n.fee,
     date: [n.y, n.m, n.d], day: Jal.toDayNum(n.y, n.m, n.d) };
-  const rec = payCtx.kind === 'rec'
+  const rec = payCtx.kind === 'check'
+    ? { ...base, amount: payCtx.c.amount, note: `چک ${payCtx.c.serial}${payCtx.c.payee ? ' · ' + payCtx.c.payee : ''}`, category: payCtx.c.category, sub: payCtx.c.sub || '',
+        ref: { kind: 'check', id: payCtx.c.id } }
+    : payCtx.kind === 'rec'
     ? { ...base, note: `${payCtx.r.title} · ${monthLabel(payCtx.next.y, payCtx.next.m)}`, category: payCtx.r.category, sub: payCtx.r.sub || '',
         ref: { kind: 'rec', id: payCtx.r.id, period: payCtx.next.period } }
     : { ...base, note: `${payCtx.l.title} · قسط ${fa(payCtx.st.paid + 1)} از ${fa(payCtx.l.total)}`,
@@ -489,6 +541,7 @@ const dlgChoose = $('#dlgChoose'), dlgRec = $('#dlgRec'), formRec = $('#formRec'
 function openChoose() { dlgChoose.showModal(); }
 $('#chooseLoan').onclick = () => { dlgChoose.close(); openLoan(); };
 $('#chooseRec').onclick = () => { dlgChoose.close(); openRec(); };
+$('#chooseCheck').onclick = () => { dlgChoose.close(); openCheck(); };
 $('#chooseCancel').onclick = () => dlgChoose.close();
 
 let editingRec = null;
@@ -552,7 +605,7 @@ async function openPayRec(r, next) {
   const active = accounts.filter(a => !a.archived);
   if (!active.length) { alert('اول توی بخش حساب‌ها یه حساب بساز.'); return; }
   payCtx = { kind: 'rec', r, next };
-  formPay.reset();
+  formPay.reset(); formPay.amount.readOnly = false;
   formPay.account.innerHTML = active.map(a => `<option value="${a.id}">${esc(a.name)} (مانده ${fa(bal.get(a.id))})</option>`).join('');
   if (r.accountId && active.some(a => a.id === r.accountId)) formPay.account.value = r.accountId;
   formPay.amount.value = r.amount.toLocaleString('en-US');
@@ -575,6 +628,93 @@ async function recAction(act, id) {
   } else if (act === 'rdel' && confirm(`«${r.title}» حذف بشه؟ تراکنش‌های پرداخت‌شده حذف نمی‌شن.`)) {
     for (const t of txs.filter(t => t.ref && t.ref.kind === 'rec' && t.ref.id === id)) await put('transactions', { ...t, ref: null });
     await del('recurring', id);
+  }
+}
+
+// ================= CHECKS =================
+// Status is derived: cleared = a linked expense transaction exists; cancelled = flag; otherwise pending.
+const checkStatus = (c, txs) => txs.some(t => t.ref && t.ref.kind === 'check' && t.ref.id === c.id) ? 'cleared' : c.cancelled ? 'cancelled' : 'pending';
+function pendingByAccount(checks, txs) {
+  const m = new Map();
+  for (const c of checks) if (checkStatus(c, txs) === 'pending') m.set(c.accountId, (m.get(c.accountId) || 0) + c.amount);
+  return m;
+}
+const dlgCheck = $('#dlgCheck'), formCheck = $('#formCheck');
+let editingCheck = null;
+function fillCheckSubs(keepSub) {
+  const subs = CATS.expense[formCheck.category.value] || [];
+  formCheck.sub.innerHTML = subs.map(s => `<option>${esc(s)}</option>`).join('');
+  if (keepSub && subs.includes(keepSub)) formCheck.sub.value = keepSub;
+  $('#lblCheckSub').hidden = !subs.length;
+}
+formCheck.category.addEventListener('change', () => fillCheckSubs());
+async function openCheck(c) {
+  const accounts = await getAll('accounts');
+  const banks = accounts.filter(a => a.type === 'bank' && (!a.archived || (c && a.id === c.accountId)));
+  if (!banks.length) { alert('اول توی بخش حساب‌ها یه حساب بانکی بساز.'); return; }
+  formCheck.reset();
+  editingCheck = c ? c.id : null;
+  $('#checkTitle').textContent = c ? 'ویرایش چک' : 'چک جدید';
+  formCheck.accountId.innerHTML = banks.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+  formCheck.category.innerHTML = Object.keys(CATS.expense).map(x => `<option>${esc(x)}</option>`).join('');
+  let date = Jal.fromDayNum(Jal.todayNum());
+  if (c) {
+    formCheck.serial.value = c.serial; formCheck.amount.value = c.amount.toLocaleString('en-US');
+    formCheck.accountId.value = c.accountId; formCheck.payee.value = c.payee || ''; formCheck.note.value = c.note || '';
+    formCheck.category.value = c.category; date = c.due;
+  }
+  fillCheckSubs(c ? c.sub : undefined);
+  formCheck.y.value = date[0]; formCheck.m.value = date[1]; formCheck.d.value = date[2];
+  $('#errCheck').textContent = '';
+  dlgCheck.showModal();
+}
+$('#cancelCheck').onclick = () => dlgCheck.close();
+formCheck.addEventListener('submit', async e => {
+  e.preventDefault();
+  const v = Object.fromEntries(new FormData(formCheck));
+  const n = Object.fromEntries(['amount', 'y', 'm', 'd'].map(k => [k, toInt(v[k])]));
+  const serial = Util.norm(v.serial).trim();
+  const all = await getAll('checks');
+  let err = '';
+  if (!serial) err = 'شماره سریال رو وارد کن.';
+  else if (Object.values(n).some(Number.isNaN)) err = 'همه عددها باید صحیح باشن.';
+  else if (n.amount < 1) err = 'مبلغ باید بیشتر از صفر باشه.';
+  else if (n.m < 1 || n.m > 12 || n.d < 1 || n.d > Jal.monthDays(n.y, n.m)) err = 'تاریخ سررسید معتبر نیست.';
+  else if (all.some(c => c.id !== editingCheck && c.accountId === Number(v.accountId) && c.serial === serial)) err = 'چکی با این سریال برای این حساب ثبت شده.';
+  if (err) { $('#errCheck').textContent = err; return; }
+  const rec = { serial, amount: n.amount, accountId: Number(v.accountId), due: [n.y, n.m, n.d], day: Jal.toDayNum(n.y, n.m, n.d),
+    payee: v.payee.trim(), category: v.category, sub: v.sub || '', note: v.note.trim(), cancelled: false };
+  if (editingCheck) rec.id = editingCheck;
+  await put('checks', rec);
+  dlgCheck.close();
+  render();
+});
+async function openPayCheck(c) {
+  const [accounts, txs] = await Promise.all([getAll('accounts'), getAll('transactions')]);
+  const bal = computeBalances(accounts, txs);
+  const a = accounts.find(x => x.id === c.accountId);
+  payCtx = { kind: 'check', c };
+  formPay.reset();
+  formPay.amount.readOnly = true;
+  formPay.account.innerHTML = `<option value="${a.id}">${esc(a.name)} (مانده ${fa(bal.get(a.id))})</option>`;
+  formPay.amount.value = c.amount.toLocaleString('en-US');
+  const [y, m, d] = Jal.fromDayNum(Jal.todayNum());
+  formPay.y.value = y; formPay.m.value = m; formPay.d.value = d;
+  $('#payTitle').textContent = `پاس شدن چک ${c.serial}`;
+  $('#errPay').textContent = '';
+  dlgPay.showModal();
+}
+async function checkAction(act, id) {
+  const [checks, txs] = await Promise.all([getAll('checks'), getAll('transactions')]);
+  const c = checks.find(x => x.id === id);
+  if (!c) return;
+  if (act === 'cclear') return openPayCheck(c);
+  if (act === 'cedit') return openCheck(c);
+  if (act === 'ccancel') { if (confirm(`چک ${c.serial} باطل بشه؟`)) { c.cancelled = true; await put('checks', c); } return; }
+  if (act === 'crestore') { c.cancelled = false; await put('checks', c); return; }
+  if (act === 'cdel' && confirm(`چک ${c.serial} حذف بشه؟ تراکنش پاس شدنش (اگه باشه) حذف نمی‌شه.`)) {
+    for (const t of txs.filter(t => t.ref && t.ref.kind === 'check' && t.ref.id === id)) await put('transactions', { ...t, ref: null });
+    await del('checks', id);
   }
 }
 
@@ -615,7 +755,7 @@ async function renderTx() {
     return `<article class="card ${cls}">
       <h2>${title}</h2>
       <div class="status">${sign}${fa(t.amount)} ریال</div>
-      <div class="meta">${fmtFull(t.date)}${t.type !== 'transfer' ? ' · ' + esc(nm(t.accountId)) : ''}${t.fee ? ` · کارمزد ${fa(t.fee)}` : ''}${t.ref ? (t.ref.kind === 'loan' ? ' · قسط وام' : ' · پرداخت دوره‌ای') : ''}</div>
+      <div class="meta">${fmtFull(t.date)}${t.type !== 'transfer' ? ' · ' + esc(nm(t.accountId)) : ''}${t.fee ? ` · کارمزد ${fa(t.fee)}` : ''}${t.ref ? ({ loan: ' · قسط وام', rec: ' · پرداخت دوره‌ای', check: ' · چک' }[t.ref.kind] || '') : ''}</div>
       ${t.note ? `<div class="meta">${esc(t.note)}</div>` : ''}
       <div class="row"><button data-act="txedit" data-id="${t.id}">ویرایش</button><button data-act="txdel" data-id="${t.id}">حذف</button></div>
     </article>`;
