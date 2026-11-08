@@ -29,6 +29,7 @@ h3.sep{margin:12px 0 0;font-size:15px;color:var(--mut);font-weight:400}
 details{margin-top:12px}
 summary{color:var(--mut);padding:8px 0;min-height:44px}
 details .card{margin-top:12px}
+.prow{margin-top:8px}
 .dates2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 label.chk{display:flex;align-items:center;gap:8px}
 input[type=checkbox]{width:auto;min-height:0}
@@ -149,6 +150,7 @@ addEventListener('error', function (e) {
     <button class="main" id="chooseLoan">وام جدید</button>
     <button class="main" id="chooseRec">پرداخت دوره‌ای جدید</button>
     <button class="main" id="chooseCheck">چک جدید</button>
+    <button class="main" id="choosePur">خرید نقد + چک</button>
     <button id="chooseCancel">انصراف</button>
   </div>
 </dialog>
@@ -190,6 +192,41 @@ addEventListener('error', function (e) {
   <label>توضیح (اختیاری)<input name="note" maxlength="100"></label>
   <p class="err" role="alert" id="errCheck"></p>
   <div class="row"><button class="main" type="submit">ذخیره چک</button><button type="button" id="cancelCheck">انصراف</button></div>
+</form>
+</dialog>
+
+<dialog id="dlgPur">
+<form id="formPur">
+  <h3>خرید نقد + چک</h3>
+  <label>عنوان خرید<input name="title" required maxlength="60"></label>
+  <label>مبلغ کل (ریال)<input name="total" inputmode="numeric" required class="ltr money"></label>
+  <label>تاریخ خرید (سال / ماه / روز)</label>
+  <div class="dates">
+    <input name="y" inputmode="numeric" aria-label="سال" required class="ltr">
+    <input name="m" inputmode="numeric" aria-label="ماه" required class="ltr">
+    <input name="d" inputmode="numeric" aria-label="روز" required class="ltr">
+  </div>
+  <label>دسته‌بندی<select name="category"></select></label>
+  <label id="lblPurSub">زیردسته<select name="sub"></select></label>
+  <label>در وجه / فروشنده (اختیاری)<input name="payee" maxlength="60"></label>
+  <label>مبلغ نقدی (ریال، می‌تونه صفر باشه)<input name="cash" inputmode="numeric" value="0" class="ltr money"></label>
+  <label>پرداخت نقدی از حساب<select name="cashAcc"></select></label>
+  <h3 class="sep">چک‌ها</h3>
+  <label>حساب بانکی چک‌ها<select name="bankAcc"></select></label>
+  <label>تعداد چک<input name="count" inputmode="numeric" value="3" class="ltr"></label>
+  <label>سریال اولین چک<input name="serial0" class="ltr"></label>
+  <label>سررسید اولین چک (سال / ماه / روز)</label>
+  <div class="dates">
+    <input name="fy" inputmode="numeric" aria-label="سال" class="ltr">
+    <input name="fm" inputmode="numeric" aria-label="ماه" class="ltr">
+    <input name="fd" inputmode="numeric" aria-label="روز" class="ltr">
+  </div>
+  <label>فاصله‌ی پیش‌فرض بین چک‌ها (ماه)<input name="gap" inputmode="numeric" value="1" class="ltr"></label>
+  <div class="row"><button type="button" id="purPreview">ساخت پیش‌نمایش چک‌ها</button></div>
+  <div id="purRows"></div>
+  <p id="purSum" class="meta"></p>
+  <p class="err" role="alert" id="errPur"></p>
+  <div class="row"><button class="main" type="submit">ذخیره خرید</button><button type="button" id="cancelPur">انصراف</button></div>
 </form>
 </dialog>
 
@@ -542,6 +579,7 @@ function openChoose() { dlgChoose.showModal(); }
 $('#chooseLoan').onclick = () => { dlgChoose.close(); openLoan(); };
 $('#chooseRec').onclick = () => { dlgChoose.close(); openRec(); };
 $('#chooseCheck').onclick = () => { dlgChoose.close(); openCheck(); };
+$('#choosePur').onclick = () => { dlgChoose.close(); openPurchase(); };
 $('#chooseCancel').onclick = () => dlgChoose.close();
 
 let editingRec = null;
@@ -717,6 +755,126 @@ async function checkAction(act, id) {
     await del('checks', id);
   }
 }
+
+// ================= PURCHASE (cash + checks) =================
+// Saves one cash expense + N pending checks in a single atomic IndexedDB transaction.
+function putMany(entries) {
+  return new Promise((res, rej) => {
+    const t = db.transaction([...new Set(entries.map(e => e[0]))], 'readwrite');
+    for (const [s, v] of entries) t.objectStore(s).put(v);
+    t.oncomplete = () => res();
+    t.onerror = t.onabort = () => rej(t.error);
+  });
+}
+const splitAmounts = (rest, count) => {
+  const per = Math.floor(rest / count);
+  return Array.from({ length: count }, (_, i) => (i === count - 1 ? rest - per * (count - 1) : per));
+};
+const nextSerial = (s, i) => (/^\d+$/.test(s) ? (BigInt(s) + BigInt(i)).toString().padStart(s.length, '0') : (i === 0 ? s : ''));
+
+const dlgPur = $('#dlgPur'), formPur = $('#formPur');
+function fillPurSubs() {
+  const subs = CATS.expense[formPur.category.value] || [];
+  formPur.sub.innerHTML = subs.map(s => `<option>${esc(s)}</option>`).join('');
+  $('#lblPurSub').hidden = !subs.length;
+}
+formPur.category.addEventListener('change', fillPurSubs);
+async function openPurchase() {
+  const accounts = (await getAll('accounts')).filter(a => !a.archived);
+  const banks = accounts.filter(a => a.type === 'bank');
+  if (!banks.length) { alert('اول توی بخش حساب‌ها یه حساب بانکی بساز.'); return; }
+  formPur.reset();
+  const opt = a => `<option value="${a.id}">${esc(a.name)}</option>`;
+  formPur.cashAcc.innerHTML = accounts.map(opt).join('');
+  formPur.bankAcc.innerHTML = banks.map(opt).join('');
+  formPur.category.innerHTML = Object.keys(CATS.expense).map(c => `<option>${esc(c)}</option>`).join('');
+  fillPurSubs();
+  const [y, m, d] = Jal.fromDayNum(Jal.todayNum());
+  for (const [a, b] of [['y', 'fy'], ['m', 'fm'], ['d', 'fd']]) formPur[a].value = formPur[b].value = [y, m, d][['y', 'm', 'd'].indexOf(a)];
+  $('#purRows').innerHTML = ''; $('#purSum').textContent = ''; $('#errPur').textContent = '';
+  dlgPur.showModal();
+}
+$('#cancelPur').onclick = () => dlgPur.close();
+
+$('#purPreview').onclick = () => {
+  const total = toInt(formPur.total.value), cash = toInt(formPur.cash.value || '0'), count = toInt(formPur.count.value);
+  const gap = toInt(formPur.gap.value || '1'), fy = toInt(formPur.fy.value), fm = toInt(formPur.fm.value), fd = toInt(formPur.fd.value);
+  const s0 = Util.norm(formPur.serial0.value).trim();
+  let err = '';
+  if ([total, cash, count, gap, fy, fm, fd].some(Number.isNaN)) err = 'مبلغ کل، نقد، تعداد، فاصله و تاریخ اولین چک باید عدد صحیح باشن.';
+  else if (total < 1 || cash > total) err = 'مبلغ نقدی نمی‌تونه بیشتر از مبلغ کل باشه.';
+  else if (count < 1 || count > 60) err = 'تعداد چک باید بین ۱ تا ۶۰ باشه.';
+  else if (gap < 1 || gap > 24) err = 'فاصله باید بین ۱ تا ۲۴ ماه باشه.';
+  else if (total - cash < count) err = 'مبلغ باقی‌مانده برای چک‌ها کمتر از تعداد چک‌هاست.';
+  else if (fm < 1 || fm > 12 || fd < 1 || fd > Jal.monthDays(fy, fm)) err = 'تاریخ اولین چک معتبر نیست.';
+  $('#errPur').textContent = err;
+  if (err) return;
+  const amounts = splitAmounts(total - cash, count);
+  $('#purRows').innerHTML = amounts.map((amt, i) => {
+    const [yy, mm] = addMonths(fy, fm, i * gap);
+    const dd = Math.min(fd, Jal.monthDays(yy, mm));
+    return `<div class="card prow">
+      <div class="meta">چک ${fa(i + 1)} از ${fa(count)}</div>
+      <label>سریال<input class="ps ltr" value="${esc(nextSerial(s0, i))}"></label>
+      <label>مبلغ (ریال)<input class="pa ltr money" inputmode="numeric" value="${amt.toLocaleString('en-US')}"></label>
+      <div class="dates">
+        <input class="py ltr" inputmode="numeric" aria-label="سال" value="${yy}">
+        <input class="pm ltr" inputmode="numeric" aria-label="ماه" value="${mm}">
+        <input class="pd ltr" inputmode="numeric" aria-label="روز" value="${dd}">
+      </div></div>`;
+  }).join('');
+  purSum();
+};
+function purSum() {
+  const rows = [...document.querySelectorAll('#purRows .prow')];
+  if (!rows.length) { $('#purSum').textContent = ''; return; }
+  const total = toInt(formPur.total.value) || 0, cash = toInt(formPur.cash.value || '0') || 0;
+  const sum = rows.reduce((s, r) => s + (toInt(r.querySelector('.pa').value) || 0), 0);
+  const diff = total - cash - sum;
+  $('#purSum').textContent = diff === 0 ? 'مجموع نقد و چک‌ها برابر مبلغ کل است.'
+    : `اختلاف با مبلغ کل: ${fa(Math.abs(diff))} ریال ${diff > 0 ? 'کمتره' : 'بیشتره'}.`;
+}
+formPur.addEventListener('input', purSum);
+
+formPur.addEventListener('submit', async e => {
+  e.preventDefault();
+  const v = Object.fromEntries(new FormData(formPur));
+  const total = toInt(v.total), cash = toInt(v.cash || '0'), y = toInt(v.y), m = toInt(v.m), d = toInt(v.d);
+  const rows = [...document.querySelectorAll('#purRows .prow')].map(r => ({
+    serial: Util.norm(r.querySelector('.ps').value).trim(), amount: toInt(r.querySelector('.pa').value),
+    y: toInt(r.querySelector('.py').value), m: toInt(r.querySelector('.pm').value), d: toInt(r.querySelector('.pd').value) }));
+  const bank = Number(v.bankAcc);
+  const existing = await getAll('checks');
+  let err = '';
+  if ([total, cash, y, m, d].some(Number.isNaN)) err = 'همه عددها باید صحیح باشن.';
+  else if (total < 1) err = 'مبلغ کل باید بیشتر از صفر باشه.';
+  else if (m < 1 || m > 12 || d < 1 || d > Jal.monthDays(y, m)) err = 'تاریخ خرید معتبر نیست.';
+  else if (!rows.length) err = 'اول پیش‌نمایش چک‌ها رو بساز.';
+  for (const [i, r] of rows.entries()) {
+    if (err) break;
+    if (!r.serial) err = `سریال چک ${fa(i + 1)} خالیه.`;
+    else if ([r.amount, r.y, r.m, r.d].some(Number.isNaN) || r.amount < 1) err = `مبلغ چک ${fa(i + 1)} معتبر نیست.`;
+    else if (r.m < 1 || r.m > 12 || r.d < 1 || r.d > Jal.monthDays(r.y, r.m)) err = `تاریخ چک ${fa(i + 1)} معتبر نیست.`;
+    else if (rows.findIndex(x => x.serial === r.serial) !== i) err = `سریال چک ${fa(i + 1)} تکراریه.`;
+    else if (existing.some(c => c.accountId === bank && c.serial === r.serial)) err = `سریال چک ${fa(i + 1)} قبلاً برای این حساب ثبت شده.`;
+  }
+  if (!err && cash + rows.reduce((s, r) => s + r.amount, 0) !== total) err = 'مجموع نقد و چک‌ها باید دقیقاً برابر مبلغ کل باشه.';
+  const entries = [];
+  if (!err && cash > 0) {
+    const tx = { type: 'expense', accountId: Number(v.cashAcc), amount: cash, fee: 0, note: `${v.title.trim()} · نقدی`,
+      date: [y, m, d], day: Jal.toDayNum(y, m, d), category: v.category, sub: v.sub || '', ref: null };
+    const neg = firstNegative(await getAll('accounts'), [...(await getAll('transactions')), tx]);
+    if (neg) err = `با پرداخت نقدی، مانده حساب «${neg.name}» منفی می‌شه.`;
+    else entries.push(['transactions', tx]);
+  }
+  if (err) { $('#errPur').textContent = err; return; }
+  rows.forEach((r, i) => entries.push(['checks', { serial: r.serial, amount: r.amount, accountId: bank, due: [r.y, r.m, r.d],
+    day: Jal.toDayNum(r.y, r.m, r.d), payee: v.payee.trim(), category: v.category, sub: v.sub || '',
+    note: `${v.title.trim()} · چک ${fa(i + 1)} از ${fa(rows.length)}`, cancelled: false }]));
+  await putMany(entries);
+  dlgPur.close();
+  render();
+});
 
 // ================= TRANSACTIONS =================
 // Balance = opening + income - expense(amount+fee) - transfer out(amount+fee) + transfer in(amount)
