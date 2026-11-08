@@ -247,6 +247,7 @@ addEventListener('error', function (e) {
 
 <script src="jalali.js"></script>
 <script src="util.js"></script>
+<script src="xlsx.js"></script>
 <script src="categories.js"></script>
 <script>
 const $ = s => document.querySelector(s);
@@ -371,6 +372,7 @@ $('#list').addEventListener('click', async e => {
   if (!b) return;
   const id = Number(b.dataset.id), act = b.dataset.act;
   if (act === 'nav-print') { window.print(); return; }
+  if (act === 'nav-xlsx') { exportReportXlsx(); return; }
   if (act.startsWith('nav-')) { shiftPeriod(act === 'nav-next' ? 1 : -1); return; }
   if (act.startsWith('tx')) { await txAction(act, id); render(); return; }
   if (act.startsWith('r')) { await recAction(act, id); render(); return; }
@@ -998,6 +1000,70 @@ function trendSvg(inc, exp) {
   return `<svg viewBox="0 0 ${W} ${H + 20}" width="100%" role="img" aria-label="نمودار میله‌ای درآمد و هزینه‌ی ماهانه">${s}</svg>`;
 }
 
+// ---- Excel export of the selected period ----
+function reportSheets(d) {
+  const { txs, accounts, loans, recs, checks, rep } = d;
+  const { from, to } = periodRange(rep);
+  const label = rep.mode === 'year' ? `سال ${yr(rep.y)}` : monthLabel(rep.y, rep.m);
+  const R = reportData(txs, from, to);
+  const B = x => ({ v: x, b: true });
+  const dstr = ([y, m, dd]) => `${y}/${String(m).padStart(2, '0')}/${String(dd).padStart(2, '0')}`;
+  const nm = id => (accounts.find(a => a.id === id) || {}).name || '';
+  const catRows = (map, total) => {
+    const rows = [[B('دسته‌بندی'), B('زیردسته'), B('مبلغ (ریال)'), B('درصد')]];
+    const pct = v => (total ? { v: Math.round((v / total) * 1000) / 10, p: true } : '');
+    for (const [cat, e] of [...map.entries()].sort((a, b) => b[1].total - a[1].total)) {
+      rows.push([B(cat), '', B(e.total), pct(e.total)]);
+      const subs = [...e.subs.entries()].sort((a, b) => b[1] - a[1]);
+      const rest = e.total - subs.reduce((s, x) => s + x[1], 0);
+      if (rest > 0 && subs.length) subs.push(['بدون زیردسته', rest]);
+      for (const [s, v] of subs) rows.push(['', s, v, pct(v)]);
+    }
+    rows.push([B('جمع'), '', B(total)]);
+    return rows;
+  };
+  const TL = { income: 'درآمد', expense: 'هزینه', transfer: 'انتقال' };
+  const trows = [[B('تاریخ'), B('نوع'), B('دسته‌بندی'), B('زیردسته'), B('حساب'), B('حساب مقصد'), B('مبلغ'), B('کارمزد'), B('توضیح')]];
+  for (const t of txs.filter(t => t.day >= from && t.day <= to).sort((a, b) => a.day - b.day || a.id - b.id))
+    trows.push([dstr(t.date), TL[t.type], t.category || '', t.sub || '', nm(t.accountId), t.type === 'transfer' ? nm(t.toAccountId) : '', t.amount, t.fee || 0, t.note || '']);
+  const T = monthlyTrend(txs, rep.y);
+  const mrows = [[B('ماه'), B('درآمد'), B('هزینه'), B('سود / زیان')]];
+  T.inc.forEach((v, i) => mrows.push([Jal.MONTHS[i], v, T.exp[i], v - T.exp[i]]));
+  const ti = T.inc.reduce((s, x) => s + x, 0), te = T.exp.reduce((s, x) => s + x, 0);
+  mrows.push([B('جمع سال'), B(ti), B(te), B(ti - te)]);
+  const dues = duesInRange(loans, recs, checks, txs, from, to);
+  const drows = [[B('تاریخ'), B('نوع'), B('عنوان'), B('مبلغ')]];
+  for (const r of dues) drows.push([dstr(Jal.fromDayNum(r.day)), r.kind, r.title, r.amount]);
+  drows.push([B('جمع'), '', '', B(dues.reduce((s, r) => s + r.amount, 0))]);
+  const bal = computeBalances(accounts, txs), pend = pendingByAccount(checks, txs);
+  const act = accounts.filter(a => !a.archived);
+  const brows = [[B('حساب'), B('نوع'), B('مانده (ریال)'), B('چک‌های در جریان')]];
+  for (const a of act) brows.push([a.name, a.type === 'cash' ? 'نقد' : 'بانکی', bal.get(a.id), pend.get(a.id) || 0]);
+  brows.push([B('جمع'), '', B(act.reduce((s, a) => s + bal.get(a.id), 0)), B(act.reduce((s, a) => s + (pend.get(a.id) || 0), 0))]);
+  return [
+    { name: 'خلاصه', widths: [30, 22], rows: [[B('گزارش مالی'), label], [], [B('درآمد'), R.income], [B('هزینه (با کارمزدها)'), R.expense], [B('سود / زیان'), B(R.income - R.expense)]] },
+    { name: 'هزینه‌ها', widths: [24, 24, 18, 10], rows: catRows(R.expCat, R.expense) },
+    { name: 'درآمدها', widths: [24, 24, 18, 10], rows: catRows(R.incCat, R.income) },
+    { name: 'تراکنش‌ها', widths: [12, 10, 22, 22, 18, 18, 16, 12, 40], rows: trows },
+    { name: `ماهانه ${rep.y}`, widths: [14, 18, 18, 18], rows: mrows },
+    { name: 'سررسیدها', widths: [12, 16, 34, 16], rows: drows },
+    { name: 'مانده حساب‌ها', widths: [26, 10, 18, 18], rows: brows }
+  ];
+}
+function downloadBlob(name, bytes, mime) {
+  const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+async function exportReportXlsx() {
+  const [txs, accounts, loans, recs, checks] = await Promise.all([getAll('transactions'), getAll('accounts'), getAll('loans'), getAll('recurring'), getAll('checks')]);
+  const bytes = Xlsx.build(reportSheets({ txs, accounts, loans, recs, checks, rep: REP }));
+  const name = `finance-report-${REP.y}${REP.mode === 'month' ? '-' + String(REP.m).padStart(2, '0') : ''}.xlsx`;
+  downloadBlob(name, bytes, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+}
+
 async function renderReports() {
   const [txs, accounts, loans, recs, checks] = await Promise.all([getAll('transactions'), getAll('accounts'), getAll('loans'), getAll('recurring'), getAll('checks')]);
   $('#summary').textContent = '';
@@ -1036,7 +1102,7 @@ async function renderReports() {
     <div class="card noprint"><div class="row" style="margin-top:0">
       <select data-rep="mode" aria-label="نوع دوره"><option value="month"${REP.mode === 'month' ? ' selected' : ''}>ماهانه</option><option value="year"${REP.mode === 'year' ? ' selected' : ''}>سالانه</option></select>
       <button data-act="nav-prev">قبلی</button><button data-act="nav-next">بعدی</button>
-      <button data-act="nav-print">PDF (چاپ)</button>
+      <button data-act="nav-print">PDF (چاپ)</button><button data-act="nav-xlsx">Excel</button>
     </div></div>
     <h2 class="plabel">گزارش ${label}</h2>
     ${summary}${catSection('هزینه به تفکیک دسته‌بندی', R.expCat, R.expense)}${catSection('درآمد به تفکیک دسته‌بندی', R.incCat, R.income)}${trend}${duesCard}${balCard}`;
