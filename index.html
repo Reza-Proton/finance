@@ -49,6 +49,21 @@ input,select{width:100%;font:inherit;padding:10px;border:1px solid var(--line);b
 .dates{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
 .err{color:var(--bad);min-height:1.5em;font-size:14px}
 [hidden]{display:none!important}
+.kv{display:flex;justify-content:space-between;gap:8px;padding:4px 0}
+.kv.tot{border-top:1px solid var(--line);font-weight:700;margin-top:6px}
+.kv.sub{padding:2px 12px;color:var(--mut);font-size:14px}
+.okc{color:var(--ok)}.badc{color:var(--bad)}
+.cat>summary,.cat .catrow{display:grid;grid-template-columns:1fr auto;gap:2px 8px;padding:6px 0;list-style:none;min-height:0}
+.cat .bar{grid-column:1/-1;display:block;height:8px;border-radius:4px;background:var(--line);overflow:hidden}
+.cat .bar i{display:block;height:100%;background:var(--acc)}
+.plabel{margin:4px 0 0;font-size:18px}
+select[data-rep]{width:auto}
+@media print{
+  :root{--bg:#fff;--ink:#000;--mut:#444;--line:#bbb;--card:#fff;--acc:#0f5e52;--bad:#b3341f;--warn:#8f5f00;--ok:#2f6f3e}
+  nav,#add,.noprint{display:none!important}
+  body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .card{break-inside:avoid}
+}
 </style>
 <script>
 addEventListener('error', function (e) {
@@ -63,7 +78,7 @@ addEventListener('error', function (e) {
 <header><h1 id="title"></h1><p id="summary"></p></header>
 <main id="list"></main>
 <button id="add"></button>
-<nav id="nav"><button data-v="accounts">حساب‌ها</button><button data-v="tx">تراکنش‌ها</button><button data-v="loans">سررسیدها</button></nav>
+<nav id="nav"><button data-v="accounts">حساب‌ها</button><button data-v="tx">تراکنش‌ها</button><button data-v="loans">سررسیدها</button><button data-v="reports">گزارش‌ها</button></nav>
 
 <dialog id="dlgAcc">
 <form id="formAcc">
@@ -267,9 +282,10 @@ const del = (s, id) => tx(s, 'readwrite', o => o.delete(id));
 // ---- navigation ----
 async function render() {
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.v === view));
-  const V = { accounts: ['حساب‌ها', 'حساب جدید', renderAccounts], tx: ['تراکنش‌ها', 'تراکنش جدید', renderTx], loans: ['سررسیدها', 'افزودن', renderLoans] }[view];
+  const V = { accounts: ['حساب‌ها', 'حساب جدید', renderAccounts], tx: ['تراکنش‌ها', 'تراکنش جدید', renderTx], loans: ['سررسیدها', 'افزودن', renderLoans], reports: ['گزارش‌ها', '', renderReports] }[view];
   $('#title').textContent = V[0];
   $('#add').textContent = V[1];
+  $('#add').hidden = view === 'reports';
   await V[2]();
 }
 $('#nav').addEventListener('click', e => {
@@ -354,6 +370,8 @@ $('#list').addEventListener('click', async e => {
   const b = e.target.closest('button[data-act]');
   if (!b) return;
   const id = Number(b.dataset.id), act = b.dataset.act;
+  if (act === 'nav-print') { window.print(); return; }
+  if (act.startsWith('nav-')) { shiftPeriod(act === 'nav-next' ? 1 : -1); return; }
   if (act.startsWith('tx')) { await txAction(act, id); render(); return; }
   if (act.startsWith('r')) { await recAction(act, id); render(); return; }
   if (act.startsWith('c')) { await checkAction(act, id); render(); return; }
@@ -875,6 +893,154 @@ formPur.addEventListener('submit', async e => {
   dlgPur.close();
   render();
 });
+
+// ================= REPORTS =================
+let REP = (() => { const [y, m] = Jal.fromDayNum(Jal.todayNum()); return { mode: 'month', y, m }; })();
+function shiftPeriod(k) {
+  if (REP.mode === 'year') REP.y += k; else [REP.y, REP.m] = addMonths(REP.y, REP.m, k);
+  render();
+}
+$('#list').addEventListener('change', e => {
+  if (e.target.dataset && e.target.dataset.rep === 'mode') { REP.mode = e.target.value; render(); }
+});
+addEventListener('beforeprint', () => document.querySelectorAll('details').forEach(d => { d.open = true; }));
+
+const yr = y => String(fa(y)).replace(/٬/g, '');
+function periodRange(p) {
+  return p.mode === 'year'
+    ? { from: Jal.toDayNum(p.y, 1, 1), to: Jal.toDayNum(p.y, 12, Jal.monthDays(p.y, 12)) }
+    : { from: Jal.toDayNum(p.y, p.m, 1), to: Jal.toDayNum(p.y, p.m, Jal.monthDays(p.y, p.m)) };
+}
+// Cash basis: only transactions count. Fees are reported as a separate expense category.
+function reportData(txs, from, to) {
+  let income = 0, expense = 0;
+  const expCat = new Map(), incCat = new Map();
+  const add = (map, cat, sub, v) => {
+    const e = map.get(cat) || { total: 0, subs: new Map() };
+    e.total += v;
+    if (sub) e.subs.set(sub, (e.subs.get(sub) || 0) + v);
+    map.set(cat, e);
+  };
+  for (const t of txs) {
+    if (t.day < from || t.day > to) continue;
+    if (t.type === 'income') { income += t.amount; add(incCat, t.category, t.sub, t.amount); continue; }
+    if (t.type === 'expense') { expense += t.amount; add(expCat, t.category, t.sub, t.amount); }
+    if (t.fee) { expense += t.fee; add(expCat, 'کارمزد', '', t.fee); }
+  }
+  return { income, expense, expCat, incCat };
+}
+function monthlyTrend(txs, year) {
+  const inc = Array(12).fill(0), exp = Array(12).fill(0);
+  for (const t of txs) {
+    if (t.date[0] !== year) continue;
+    const i = t.date[1] - 1;
+    if (t.type === 'income') inc[i] += t.amount;
+    else exp[i] += (t.type === 'expense' ? t.amount : 0) + t.fee;
+  }
+  return { inc, exp };
+}
+function duesInRange(loans, recs, checks, txs, from, to) {
+  const rows = [];
+  for (const l of loans) {
+    const st = loanState(l, txs);
+    for (let j = 0; j < l.total - st.paid; j++) {
+      const [y, m] = addMonths(st.due[0], st.due[1], j);
+      const day = Jal.toDayNum(y, m, Math.min(l.dueDay, Jal.monthDays(y, m)));
+      if (day > to) break;
+      if (day >= from) rows.push({ day, kind: 'قسط وام', title: l.title, amount: l.amount });
+    }
+  }
+  for (const r of recs) {
+    const paid = new Set(txs.filter(t => t.ref && t.ref.kind === 'rec' && t.ref.id === r.id).map(t => t.ref.period));
+    const skipped = new Set(r.skipped || []);
+    const endIdx = r.end ? r.end[0] * 12 + r.end[1] : Infinity;
+    let [y, m] = r.start;
+    for (let i = 0; i < 600 && y * 12 + m <= endIdx; i++) {
+      const day = Jal.toDayNum(y, m, Math.min(r.dueDay, Jal.monthDays(y, m)));
+      if (day > to) break;
+      if (day >= from && !paid.has(`${y}-${m}`) && !skipped.has(`${y}-${m}`)) rows.push({ day, kind: 'پرداخت دوره‌ای', title: r.title, amount: r.amount });
+      [y, m] = addMonths(y, m, 1);
+    }
+  }
+  for (const c of checks) {
+    if (checkStatus(c, txs) === 'pending' && c.day >= from && c.day <= to)
+      rows.push({ day: c.day, kind: 'چک', title: `چک ${c.serial}` + (c.payee ? ' · ' + c.payee : ''), amount: c.amount });
+  }
+  return rows.sort((a, b) => a.day - b.day);
+}
+
+function catSection(title, map, total) {
+  const rows = [...map.entries()].sort((a, b) => b[1].total - a[1].total);
+  if (!rows.length) return `<section class="card"><h2>${title}</h2><div class="meta">داده‌ای برای این دوره نیست.</div></section>`;
+  const pct = v => (total ? (v / total) * 100 : 0);
+  const fmtPct = p => p.toLocaleString('fa-IR', { maximumFractionDigits: 1 }) + '٪';
+  const body = rows.map(([cat, e]) => {
+    const subs = [...e.subs.entries()].sort((a, b) => b[1] - a[1]);
+    const rest = e.total - subs.reduce((s, x) => s + x[1], 0);
+    if (rest > 0 && subs.length) subs.push(['بدون زیردسته', rest]);
+    const head = `<span>${esc(cat)}</span><span>${fa(e.total)} · ${fmtPct(pct(e.total))}</span><span class="bar"><i style="width:${pct(e.total).toFixed(1)}%"></i></span>`;
+    return subs.length
+      ? `<details class="cat"><summary>${head}</summary>${subs.map(([s, v]) => `<div class="kv sub"><span>${esc(s)}</span><span>${fa(v)}</span></div>`).join('')}</details>`
+      : `<div class="cat"><div class="catrow">${head}</div></div>`;
+  }).join('');
+  return `<section class="card"><h2>${title}</h2>${body}<div class="kv tot"><span>جمع</span><span>${fa(total)} ریال</span></div></section>`;
+}
+function trendSvg(inc, exp) {
+  const max = Math.max(1, ...inc, ...exp), W = 360, H = 150, gw = W / 12, bw = 9;
+  let s = '';
+  for (let i = 0; i < 12; i++) {
+    const x = gw * (11 - i) + gw / 2; // month 1 on the right (RTL)
+    const hi = (inc[i] / max) * H, he = (exp[i] / max) * H;
+    s += `<rect x="${(x - bw - 1).toFixed(1)}" y="${(H - hi).toFixed(1)}" width="${bw}" height="${hi.toFixed(1)}" style="fill:var(--ok)"/>`
+      + `<rect x="${(x + 1).toFixed(1)}" y="${(H - he).toFixed(1)}" width="${bw}" height="${he.toFixed(1)}" style="fill:var(--bad)"/>`
+      + `<text x="${x.toFixed(1)}" y="${H + 14}" text-anchor="middle" font-size="10" style="fill:var(--mut)">${fa(i + 1)}</text>`;
+  }
+  return `<svg viewBox="0 0 ${W} ${H + 20}" width="100%" role="img" aria-label="نمودار میله‌ای درآمد و هزینه‌ی ماهانه">${s}</svg>`;
+}
+
+async function renderReports() {
+  const [txs, accounts, loans, recs, checks] = await Promise.all([getAll('transactions'), getAll('accounts'), getAll('loans'), getAll('recurring'), getAll('checks')]);
+  $('#summary').textContent = '';
+  const { from, to } = periodRange(REP);
+  const label = REP.mode === 'year' ? `سال ${yr(REP.y)}` : monthLabel(REP.y, REP.m);
+  const R = reportData(txs, from, to);
+  const net = R.income - R.expense;
+  const money = n => `${n < 0 ? '−' : ''}${fa(Math.abs(n))} ریال`;
+
+  const summary = `<section class="card"><h2>خلاصه</h2>
+    <div class="kv"><span>درآمد</span><span>${money(R.income)}</span></div>
+    <div class="kv"><span>هزینه (با کارمزدها)</span><span>${money(R.expense)}</span></div>
+    <div class="kv tot"><span>سود / زیان</span><span class="${net >= 0 ? 'okc' : 'badc'}">${money(net)}</span></div></section>`;
+
+  const T = monthlyTrend(txs, REP.y);
+  const maxV = Math.max(0, ...T.inc, ...T.exp);
+  const trend = `<section class="card"><h2>روند ماهانه سال ${yr(REP.y)}</h2>${trendSvg(T.inc, T.exp)}
+    <div class="meta"><span class="okc">■ درآمد</span> · <span class="badc">■ هزینه</span> · بیشترین مقدار نمودار: ${fa(maxV)} ریال</div>
+    <details><summary>جدول ماهانه</summary>${T.inc.map((v, i) => `<div class="kv sub"><span>${Jal.MONTHS[i]}</span><span>درآمد ${fa(v)} · هزینه ${fa(T.exp[i])}</span></div>`).join('')}</details></section>`;
+
+  const dues = duesInRange(loans, recs, checks, txs, from, to);
+  const duesTotal = dues.reduce((s, r) => s + r.amount, 0);
+  const duesCard = `<section class="card"><h2>سررسیدهای دوره</h2>${dues.length
+    ? dues.map(r => `<div class="kv"><span>${fmtDate(Jal.fromDayNum(r.day))} · ${r.kind} · ${esc(r.title)}</span><span>${fa(r.amount)}</span></div>`).join('')
+      + `<div class="kv tot"><span>جمع</span><span>${fa(duesTotal)} ریال</span></div>`
+    : '<div class="meta">سررسیدی توی این دوره نیست.</div>'}</section>`;
+
+  const bal = computeBalances(accounts, txs), pend = pendingByAccount(checks, txs);
+  const act = accounts.filter(a => !a.archived);
+  const balCard = `<section class="card"><h2>مانده‌ی حساب‌ها (الان)</h2>${act.length
+    ? act.map(a => `<div class="kv"><span>${esc(a.name)}${pend.get(a.id) ? ` <span class="meta">· چک در جریان ${fa(pend.get(a.id))}</span>` : ''}</span><span>${fa(bal.get(a.id))}</span></div>`).join('')
+      + `<div class="kv tot"><span>جمع</span><span>${fa(act.reduce((s, a) => s + bal.get(a.id), 0))} ریال</span></div>`
+    : '<div class="meta">حسابی ثبت نشده.</div>'}</section>`;
+
+  $('#list').innerHTML = `
+    <div class="card noprint"><div class="row" style="margin-top:0">
+      <select data-rep="mode" aria-label="نوع دوره"><option value="month"${REP.mode === 'month' ? ' selected' : ''}>ماهانه</option><option value="year"${REP.mode === 'year' ? ' selected' : ''}>سالانه</option></select>
+      <button data-act="nav-prev">قبلی</button><button data-act="nav-next">بعدی</button>
+      <button data-act="nav-print">PDF (چاپ)</button>
+    </div></div>
+    <h2 class="plabel">گزارش ${label}</h2>
+    ${summary}${catSection('هزینه به تفکیک دسته‌بندی', R.expCat, R.expense)}${catSection('درآمد به تفکیک دسته‌بندی', R.incCat, R.income)}${trend}${duesCard}${balCard}`;
+}
 
 // ================= TRANSACTIONS =================
 // Balance = opening + income - expense(amount+fee) - transfer out(amount+fee) + transfer in(amount)
