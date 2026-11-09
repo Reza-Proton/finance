@@ -1,5 +1,5 @@
 // Cache-first service worker. Bump CACHE when you change any file.
-const CACHE = 'fin-v10';
+const CACHE = 'fin-v11';
 const FILES = ['./', 'index.html', 'jalali.js', 'util.js', 'xlsx.js', 'categories.js', 'manifest.json', 'icon-192.png', 'icon-512.png'];
 self.addEventListener('install', e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting())));
 self.addEventListener('activate', e => e.waitUntil(

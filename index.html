@@ -49,7 +49,9 @@ input,select{width:100%;font:inherit;padding:10px;border:1px solid var(--line);b
 .dates{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
 .err{color:var(--bad);min-height:1.5em;font-size:14px}
 [hidden]{display:none!important}
-.kv{display:flex;justify-content:space-between;gap:8px;padding:4px 0}
+.kv{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;padding:4px 0}
+.kv button{min-height:40px;padding:4px 10px;font-size:14px}
+nav button{padding:8px 2px;font-size:14px}
 .kv.tot{border-top:1px solid var(--line);font-weight:700;margin-top:6px}
 .kv.sub{padding:2px 12px;color:var(--mut);font-size:14px}
 .okc{color:var(--ok)}.badc{color:var(--bad)}
@@ -78,7 +80,7 @@ addEventListener('error', function (e) {
 <header><h1 id="title"></h1><p id="summary"></p></header>
 <main id="list"></main>
 <button id="add"></button>
-<nav id="nav"><button data-v="accounts">حساب‌ها</button><button data-v="tx">تراکنش‌ها</button><button data-v="loans">سررسیدها</button><button data-v="reports">گزارش‌ها</button></nav>
+<nav id="nav"><button data-v="accounts">حساب‌ها</button><button data-v="tx">تراکنش‌ها</button><button data-v="loans">سررسیدها</button><button data-v="reports">گزارش‌ها</button><button data-v="settings">تنظیمات</button></nav>
 
 <dialog id="dlgAcc">
 <form id="formAcc">
@@ -158,6 +160,8 @@ addEventListener('error', function (e) {
   <div class="row"><button class="main" type="submit">ثبت پرداخت</button><button type="button" id="cancelPay">انصراف</button></div>
 </form>
 </dialog>
+
+<input type="file" id="restoreFile" accept=".json,application/json" hidden>
 
 <dialog id="dlgChoose">
   <h3>چی اضافه کنم؟</h3>
@@ -259,10 +263,11 @@ let db, view = 'accounts';
 // ---- storage (IndexedDB) ----
 function openDb() {
   return new Promise((res, rej) => {
-    const r = indexedDB.open('finance', 5);
+    const r = indexedDB.open('finance', 6);
     r.onupgradeneeded = () => {
       for (const n of ['loans', 'accounts', 'transactions', 'recurring', 'checks'])
         if (!r.result.objectStoreNames.contains(n)) r.result.createObjectStore(n, { keyPath: 'id', autoIncrement: true });
+      if (!r.result.objectStoreNames.contains('settings')) r.result.createObjectStore('settings', { keyPath: 'key' });
     };
     r.onsuccess = () => res(r.result);
     r.onerror = () => rej(r.error);
@@ -283,10 +288,10 @@ const del = (s, id) => tx(s, 'readwrite', o => o.delete(id));
 // ---- navigation ----
 async function render() {
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.v === view));
-  const V = { accounts: ['حساب‌ها', 'حساب جدید', renderAccounts], tx: ['تراکنش‌ها', 'تراکنش جدید', renderTx], loans: ['سررسیدها', 'افزودن', renderLoans], reports: ['گزارش‌ها', '', renderReports] }[view];
+  const V = { accounts: ['حساب‌ها', 'حساب جدید', renderAccounts], tx: ['تراکنش‌ها', 'تراکنش جدید', renderTx], loans: ['سررسیدها', 'افزودن', renderLoans], reports: ['گزارش‌ها', '', renderReports], settings: ['تنظیمات', '', renderSettings] }[view];
   $('#title').textContent = V[0];
   $('#add').textContent = V[1];
-  $('#add').hidden = view === 'reports';
+  $('#add').hidden = view === 'reports' || view === 'settings';
   await V[2]();
 }
 $('#nav').addEventListener('click', e => {
@@ -371,6 +376,7 @@ $('#list').addEventListener('click', async e => {
   const b = e.target.closest('button[data-act]');
   if (!b) return;
   const id = Number(b.dataset.id), act = b.dataset.act;
+  if (act.startsWith('set-')) { await settingsAction(act, b.dataset); render(); return; }
   if (act === 'nav-print') { window.print(); return; }
   if (act === 'nav-xlsx') { exportReportXlsx(); return; }
   if (act.startsWith('nav-')) { shiftPeriod(act === 'nav-next' ? 1 : -1); return; }
@@ -896,6 +902,138 @@ formPur.addEventListener('submit', async e => {
   render();
 });
 
+// ================= SETTINGS (backup + categories) =================
+const STORES = ['accounts', 'transactions', 'loans', 'recurring', 'checks'];
+const SHAPE = {
+  accounts: r => typeof r.name === 'string' && Number.isFinite(r.opening),
+  transactions: r => ['income', 'expense', 'transfer'].includes(r.type) && Number.isFinite(r.amount) && Number.isFinite(r.fee) && Number.isFinite(r.day) && Array.isArray(r.date),
+  loans: r => typeof r.title === 'string' && Number.isFinite(r.amount) && Number.isFinite(r.total),
+  recurring: r => typeof r.title === 'string' && Array.isArray(r.start),
+  checks: r => typeof r.serial === 'string' && Number.isFinite(r.amount) && Number.isFinite(r.day)
+};
+const validBackup = o => !!o && o.app === 'finance-pwa' && !!o.stores
+  && STORES.every(s => Array.isArray(o.stores[s]) && o.stores[s].every(r => r && typeof r === 'object' && Number.isInteger(r.id) && SHAPE[s](r)));
+const validCats = c => !!c && ['expense', 'income'].every(k => c[k] && typeof c[k] === 'object' && Object.keys(c[k]).length > 0
+  && Object.values(c[k]).every(a => Array.isArray(a) && a.every(x => typeof x === 'string')));
+
+function replaceAll(data, categories) {
+  return new Promise((res, rej) => {
+    const t = db.transaction([...STORES, 'settings'], 'readwrite');
+    for (const s of STORES) { const o = t.objectStore(s); o.clear(); for (const r of data[s]) o.put(r); }
+    if (categories) t.objectStore('settings').put({ key: 'categories', value: categories });
+    t.oncomplete = () => res();
+    t.onerror = t.onabort = () => rej(t.error);
+  });
+}
+async function doBackup() {
+  const stores = {};
+  for (const s of STORES) stores[s] = await getAll(s);
+  const today = Jal.todayNum(), [y, m, d] = Jal.fromDayNum(today);
+  const data = { app: 'finance-pwa', version: 1, created: new Date().toISOString(), stores, categories: CATS };
+  downloadBlob(`finance-backup-${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}.json`, JSON.stringify(data), 'application/json');
+  await put('settings', { key: 'lastBackup', value: today });
+}
+$('#restoreFile').addEventListener('change', async e => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  let o;
+  try { o = JSON.parse(await f.text()); } catch (_) { alert('فایل خراب است یا JSON معتبر نیست.'); return; }
+  if (!validBackup(o)) { alert('این فایل، backup معتبر این برنامه نیست.'); return; }
+  const n = s => fa(o.stores[s].length);
+  if (!confirm(`با بازیابی، همه‌ی داده‌های فعلی حذف و با محتوای فایل جایگزین می‌شن.\n${n('accounts')} حساب، ${n('transactions')} تراکنش، ${n('loans')} وام، ${n('recurring')} پرداخت دوره‌ای، ${n('checks')} چک\nبرای اطمینان، قبلش از داده‌ی فعلی backup بگیر. ادامه می‌دی؟`)) return;
+  const cats = validCats(o.categories) ? o.categories : null;
+  await replaceAll(o.stores, cats);
+  if (cats) window.CATS = cats;
+  render();
+});
+
+const OPEN = new Set();
+$('#list').addEventListener('toggle', e => {
+  const k = e.target.dataset && e.target.dataset.key;
+  if (k) { if (e.target.open) OPEN.add(k); else OPEN.delete(k); }
+}, true);
+
+async function renderSettings() {
+  $('#summary').textContent = '';
+  const last = await tx('settings', 'readonly', o => o.get('lastBackup'));
+  const persisted = navigator.storage && navigator.storage.persisted ? await navigator.storage.persisted() : null;
+  const age = last ? Jal.todayNum() - last.value : 0;
+  const backup = `<section class="card"><h2>پشتیبان‌گیری</h2>
+    <div class="meta ${last && age > 30 ? 'badc' : ''}">${last ? `آخرین نسخه‌ی پشتیبان: ${fmtDate(Jal.fromDayNum(last.value))} (${age === 0 ? 'امروز' : fa(age) + ' روز پیش'})` : 'هنوز نسخه‌ی پشتیبان نگرفتی.'}</div>
+    <div class="meta">فایل backup شامل همه‌ی اطلاعات (از جمله شماره حساب و شبا) است؛ جای امنی نگهش دار.</div>
+    <div class="meta">${persisted === true ? 'ذخیره‌سازی ماندگار فعاله.' : persisted === false ? 'ذخیره‌سازی ماندگار فعال نیست؛ مرورگر ممکنه توی کمبود فضا داده‌ها رو پاک کنه. مرتب backup بگیر.' : ''}</div>
+    <div class="row"><button class="main" data-act="set-backup">دانلود backup</button><button data-act="set-restore">بازیابی از فایل</button></div></section>`;
+  const block = (kind, title) => `<details class="card" data-key="${kind}"${OPEN.has(kind) ? ' open' : ''}><summary>${title}</summary>`
+    + Object.entries(CATS[kind]).map(([c, subs]) => {
+      const a = `data-kind="${kind}" data-cat="${esc(c)}"`;
+      return `<div class="kv"><strong>${esc(c)}</strong><span><button data-act="set-subadd" ${a}>+ زیردسته</button> <button data-act="set-catren" ${a}>تغییر نام</button> <button data-act="set-catdel" ${a}>حذف</button></span></div>`
+        + subs.map(s => `<div class="kv sub"><span>${esc(s)}</span><span><button data-act="set-subren" ${a} data-sub="${esc(s)}">تغییر نام</button> <button data-act="set-subdel" ${a} data-sub="${esc(s)}">حذف</button></span></div>`).join('');
+    }).join('')
+    + `<div class="row"><button data-act="set-catadd" data-kind="${kind}">+ دسته‌ی جدید</button></div></details>`;
+  $('#list').innerHTML = backup + block('expense', 'دسته‌بندی هزینه‌ها') + block('income', 'دسته‌بندی درآمدها');
+}
+
+// All records that use a category (and optionally a subcategory): [[store, record], ...]
+async function catUsage(kind, cat, sub) {
+  const [txs, checks, recs] = await Promise.all([getAll('transactions'), getAll('checks'), getAll('recurring')]);
+  const hit = r => r.category === cat && (sub === undefined || (r.sub || '') === sub);
+  let list = txs.filter(t => t.type === kind && hit(t)).map(t => ['transactions', t]);
+  if (kind === 'expense') list = list.concat(checks.filter(hit).map(c => ['checks', c]), recs.filter(hit).map(r => ['recurring', r]));
+  return list;
+}
+async function settingsAction(act, ds) {
+  if (act === 'set-backup') return doBackup();
+  if (act === 'set-restore') { $('#restoreFile').click(); return; }
+  const { kind, cat, sub } = ds;
+  const next = JSON.parse(JSON.stringify(CATS)), cats = next[kind];
+  const ask = (msg, def) => (prompt(msg, def || '') || '').trim();
+  const save = async entries => { await putMany([...entries, ['settings', { key: 'categories', value: next }]]); window.CATS = next; };
+  const locked = kind === 'expense' && cat === 'اقساط و بدهی‌ها' && (act.startsWith('set-cat') || sub === 'قسط');
+  if (act !== 'set-catadd' && act !== 'set-subadd' && locked) { alert('این دسته برای ثبت اقساط وام لازمه و قابل تغییر نیست.'); return; }
+  if (act === 'set-catadd') {
+    const n = ask('نام دسته‌ی جدید:');
+    if (!n) return;
+    if (cats[n] || n === 'کارمزد') { alert('این نام قبلاً هست.'); return; }
+    cats[n] = []; return save([]);
+  }
+  if (act === 'set-catren') {
+    const n = ask('نام جدید دسته:', cat);
+    if (!n || n === cat) return;
+    if (cats[n] || n === 'کارمزد') { alert('این نام قبلاً هست.'); return; }
+    const entries = (await catUsage(kind, cat)).map(([s, r]) => [s, { ...r, category: n }]);
+    next[kind] = Object.fromEntries(Object.entries(cats).map(([k, v]) => [k === cat ? n : k, v]));
+    return save(entries);
+  }
+  if (act === 'set-catdel') {
+    if (Object.keys(cats).length < 2) { alert('حداقل یک دسته باید بمونه.'); return; }
+    const used = await catUsage(kind, cat);
+    if (used.length) { alert(`این دسته توی ${fa(used.length)} مورد استفاده شده. اول اون‌ها رو به دسته‌ی دیگه ببر.`); return; }
+    if (!confirm(`دسته‌ی «${cat}» حذف بشه؟`)) return;
+    delete cats[cat]; return save([]);
+  }
+  if (act === 'set-subadd') {
+    const n = ask(`نام زیردسته‌ی جدید برای «${cat}»:`);
+    if (!n) return;
+    if (cats[cat].includes(n)) { alert('این زیردسته قبلاً هست.'); return; }
+    cats[cat].push(n); return save([]);
+  }
+  if (act === 'set-subren') {
+    const n = ask('نام جدید زیردسته:', sub);
+    if (!n || n === sub) return;
+    if (cats[cat].includes(n)) { alert('این زیردسته قبلاً هست.'); return; }
+    const entries = (await catUsage(kind, cat, sub)).map(([s, r]) => [s, { ...r, sub: n }]);
+    cats[cat] = cats[cat].map(x => (x === sub ? n : x));
+    return save(entries);
+  }
+  if (act === 'set-subdel') {
+    const used = await catUsage(kind, cat, sub);
+    if (used.length) { alert(`این زیردسته توی ${fa(used.length)} مورد استفاده شده. اول اون‌ها رو تغییر بده.`); return; }
+    if (!confirm(`زیردسته‌ی «${sub}» حذف بشه؟`)) return;
+    cats[cat] = cats[cat].filter(x => x !== sub); return save([]);
+  }
+}
+
 // ================= REPORTS =================
 let REP = (() => { const [y, m] = Jal.fromDayNum(Jal.todayNum()); return { mode: 'month', y, m }; })();
 function shiftPeriod(k) {
@@ -1260,6 +1398,10 @@ document.addEventListener('input', e => {
     $('#list').innerHTML = '<p class="empty">ذخیره‌سازی (IndexedDB) در این حالت کار نمی‌کنه.<br>فایل‌ها باید از آدرس HTTPS یا localhost باز بشن.</p>';
     return;
   }
+  try {
+    const s = await tx('settings', 'readonly', o => o.get('categories'));
+    if (s && validCats(s.value)) window.CATS = s.value;
+  } catch (_) {}
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
   render();
