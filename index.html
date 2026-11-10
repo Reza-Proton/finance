@@ -7,7 +7,8 @@
 <script>try{var t=localStorage.getItem("theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}</script>
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icon-192.png">
-<title>مدیریت مالی</title>
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Taraz</title>
 <style>
 @font-face{font-family:'Vazirmatn';src:local('Vazirmatn'),url('fonts/Vazirmatn-Variable.woff2') format('woff2');font-weight:100 900;font-style:normal;font-display:swap}
 :root{--bg:#f3f5fa;--ink:#051438;--mut:#4a5678;--line:#d6dce9;--card:#ffffff;--acc:#0c6f3c;--onacc:#ffffff;--bad:#dc1c23;--warn:#8f5f00;--ok:#0c6f3c;--tint:#e1f2e8;--badbg:#fde6e7;--warnbg:#fbf1d9;--mutbg:#e8ecf5;--bad-t:#b3141b;--warn-t:#8f5f00;--ok-t:#0c6f3c;--hero-a:#051438;--hero-b:#1e4099;--shadow:0 2px 14px rgba(5,20,56,.07);--cb:transparent;--navshadow:0 6px 24px rgba(5,20,56,.14)}
@@ -1251,7 +1252,7 @@ function downloadBlob(name, bytes, mime) {
 async function exportReportXlsx() {
   const [txs, accounts, loans, recs, checks] = await Promise.all([getAll('transactions'), getAll('accounts'), getAll('loans'), getAll('recurring'), getAll('checks')]);
   const bytes = Xlsx.build(reportSheets({ txs, accounts, loans, recs, checks, rep: REP }));
-  const name = `finance-report-${REP.y}${REP.mode === 'month' ? '-' + String(REP.m).padStart(2, '0') : ''}.xlsx`;
+  const name = `taraz-report-${REP.y}${REP.mode === 'month' ? '-' + String(REP.m).padStart(2, '0') : ''}.xlsx`;
   downloadBlob(name, bytes, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
 }
 
